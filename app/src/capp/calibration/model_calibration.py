@@ -397,6 +397,8 @@ def run_model_calibration(
     validate_model_calibration_grid_resolution(grid)
     started = perf_counter()
     worker_count = min(options.max_workers, options.max_evaluations)
+    if options.backend is SolverBackend.CUDA:
+        worker_count = 1
     samples = _run_model_calibration_shared_candidates(
         grid,
         targets,
@@ -1036,9 +1038,26 @@ def _run_model_calibration_shared_candidates(
         )
         pipeline = SimulationPipeline(solver=create_solver(solver_parameters))
 
+        solver_progress_callback = None
+        if progress_callback is not None:
+
+            def solver_progress(percent: int, message: str) -> None:
+                with completed_lock:
+                    running_fraction = completed + min(0.95, max(0, min(100, percent)) / 100)
+                progress_callback(
+                    int(running_fraction * 100 / options.max_evaluations),
+                    f"Candidate {candidate_index}/{options.max_evaluations}: {message}",
+                )
+
+            solver_progress_callback = solver_progress
+
         candidate_started = perf_counter()
         solver_started = perf_counter()
-        result = pipeline.run_voxel_grid(grid, solver_parameters)
+        result = pipeline.run_voxel_grid(
+            grid,
+            solver_parameters,
+            progress_callback=solver_progress_callback,
+        )
         solver_seconds = perf_counter() - solver_started
 
         roi_started = perf_counter()

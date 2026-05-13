@@ -2111,7 +2111,18 @@ class WorkbenchMainWindow:
             self._calibration_processor_status.setText("Solver status not validated.")
             return
         state = "Available" if status.available else "Unavailable"
-        self._calibration_processor_status.setText(f"{state}. {status.detail}")
+        gpu_selected = self._calibration_processor.currentData() == "cuda"
+        if hasattr(self, "_calibration_parallel_samples"):
+            self._calibration_parallel_samples.setEnabled(not gpu_selected)
+            self._calibration_parallel_samples.setToolTip(
+                "PBF X runs one calibration candidate at a time on the selected GPU."
+                if gpu_selected
+                else ""
+            )
+        detail = status.detail
+        if gpu_selected:
+            detail = f"{detail} Model Calibration uses one GPU worker."
+        self._calibration_processor_status.setText(f"{state}. {detail}")
 
     def _selected_calibration_backend(self):
         from capp.domain import SolverBackend

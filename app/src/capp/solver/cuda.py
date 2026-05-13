@@ -46,7 +46,8 @@ class CudaLayerwiseMarkovSolver:
 
         cp = self._cp
         started = perf_counter()
-        _report(progress_callback, 0, "Preparing CUDA solver")
+        progress = _ProgressReporter(progress_callback)
+        _report(progress.report, 0, "Preparing CUDA solver")
 
         voxel = cp.asarray(grid.data, dtype=cp.float32)
         x_size, y_size, z_size = grid.shape
@@ -85,7 +86,7 @@ class CudaLayerwiseMarkovSolver:
         for layer in range(1, z_size + 1):
             center_voxel = voxel_calc[1 : x_size + 1, 1 : y_size + 1, layer]
             layer_view = probability[1 : x_size + 1, 1 : y_size + 1, layer]
-            _layer_progress(progress_callback, layer, z_size, 0, parameters.iteration_bound)
+            _layer_progress(progress.report, layer, z_size, 0, parameters.iteration_bound)
 
             if layer <= beta:
                 layer_view[...] = center_voxel
@@ -114,7 +115,7 @@ class CudaLayerwiseMarkovSolver:
                     layer_view[...] = updated
                     iteration += 1
                     _layer_progress(
-                        progress_callback,
+                        progress.report,
                         layer,
                         z_size,
                         iteration,
@@ -130,18 +131,18 @@ class CudaLayerwiseMarkovSolver:
                 probability[:, :, layer] = binary[:, :, layer].astype(cp.float32)
 
         if parameters.stochastic_mode is StochasticMode.IN_VOLUME:
-            _report(progress_callback, 92, "Sampling CUDA in-volume stochastic field")
+            _report(progress.report, 92, "Sampling CUDA in-volume stochastic field")
             binary = (random_field <= probability) & voxel_calc.astype(cp.bool_)
-            _report(progress_callback, 94, "Smoothing CUDA sampled volume")
+            _report(progress.report, 94, "Smoothing CUDA sampled volume")
             binary = _smooth_binary_gpu(cp, binary, max_iterations=20)
 
-        _report(progress_callback, 96, "Transferring CUDA result to CPU")
+        _report(progress.report, 96, "Transferring CUDA result to CPU")
         cropped_probability = cp.asnumpy(
             probability_export[1 : x_size + 1, 1 : y_size + 1, 1 : z_size + 1]
         )
         binary_cpu = cp.asnumpy(binary)
 
-        _report(progress_callback, 98, "Post-processing connected components")
+        _report(progress.report, 98, "Post-processing connected components")
         cropped_binary = _postprocess_binary(
             binary_cpu,
             x_size,
@@ -158,7 +159,7 @@ class CudaLayerwiseMarkovSolver:
         probability_density = float(
             (probability_uint8 * grid.data.astype(np.uint8)).sum() / solid_count
         )
-        _report(progress_callback, 100, "CUDA solver complete")
+        _report(progress.report, 100, "CUDA solver complete")
         return SimulationResult(
             probability=probability_uint8,
             binary=cropped_binary,
@@ -229,6 +230,21 @@ def _smooth_binary_gpu(cp, binary, max_iterations: int):
 def _report(progress_callback: ProgressCallback | None, percent: int, message: str) -> None:
     if progress_callback is not None:
         progress_callback(max(0, min(100, int(percent))), message)
+
+
+class _ProgressReporter:
+    def __init__(self, callback: ProgressCallback | None) -> None:
+        self._callback = callback
+        self._last_percent = -1
+
+    def report(self, percent: int, message: str) -> None:
+        if self._callback is None:
+            return
+        percent = max(0, min(100, int(percent)))
+        if percent == self._last_percent:
+            return
+        self._last_percent = percent
+        self._callback(percent, message)
 
 
 def _layer_progress(
