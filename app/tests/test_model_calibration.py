@@ -226,6 +226,8 @@ def test_run_model_calibration_reuses_candidate_simulations_across_samples(monke
     assert len(calls) == 3
     assert len(result.samples) == 2
     assert all(sample.evaluations == 3 for sample in result.samples)
+    assert result.output_dir is None
+    assert result.save_seconds == 0.0
 
 
 def test_model_calibration_reports_candidate_start_progress(monkeypatch):

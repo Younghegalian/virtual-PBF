@@ -313,7 +313,7 @@ class _ModelCalibrationWorker(QRunnable):
                 geometry_path=self.geometry_path,
                 sample_dir=self.sample_dir,
                 voxel_spacing=self.voxel_spacing,
-                output_dir=self.output_dir,
+                output_dir=None,
                 options=ModelCalibrationOptions(
                     max_evaluations=self.max_evaluations,
                     backend=SolverBackend(self.backend),
@@ -328,6 +328,45 @@ class _ModelCalibrationWorker(QRunnable):
             return
 
         self.signals.finished.emit(result)
+
+
+class _SaveModelCalibrationWorkerSignals(QObject):
+    finished = Signal(str, float)
+    failed = Signal(str)
+    progress = Signal(int, str)
+
+
+class _SaveModelCalibrationWorker(QRunnable):
+    def __init__(self, output_dir: str, result, geometry_path: str) -> None:
+        super().__init__()
+        self.output_dir = output_dir
+        self.result = result
+        self.geometry_path = geometry_path
+        self.signals = _SaveModelCalibrationWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from time import perf_counter
+
+            from capp.calibration.model_calibration import save_model_calibration_outputs
+
+            def progress(percent: int, message: str) -> None:
+                self.signals.progress.emit(percent, message)
+
+            started = perf_counter()
+            save_model_calibration_outputs(
+                self.output_dir,
+                self.result,
+                calibration_geometry_path=self.geometry_path,
+                progress_callback=progress,
+            )
+            elapsed = perf_counter() - started
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.finished.emit(self.output_dir, elapsed)
 
 
 class _ResearchArtifactExportWorkerSignals(QObject):
@@ -347,7 +386,7 @@ class _ResearchArtifactExportWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            from capp.calibration import export_model_calibration_research_artifacts
+            from capp.calibration.model_calibration import export_model_calibration_research_artifacts
 
             def progress(percent: int, message: str) -> None:
                 self.signals.progress.emit(percent, message)
@@ -376,42 +415,101 @@ class _MachineMapWorker(QRunnable):
         self,
         weights_csv: str,
         coordinates_xlsx: str,
-        output_dir: str,
         resolution: int,
         preset_name: str,
         voxel_spacing: float,
+        calibration_result=None,
     ) -> None:
         super().__init__()
         self.weights_csv = weights_csv
         self.coordinates_xlsx = coordinates_xlsx
-        self.output_dir = output_dir
         self.resolution = resolution
         self.preset_name = preset_name
         self.voxel_spacing = voxel_spacing
+        self.calibration_result = calibration_result
         self.signals = _MachineMapWorkerSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            from capp.machine_map import generate_machine_parameter_map_from_files
+            from capp.machine_map import (
+                build_machine_parameter_map,
+                build_machine_parameter_map_from_files,
+                machine_parameter_rows_from_calibration_result,
+                read_sample_coordinates_xlsx,
+            )
 
             def progress(percent: int, message: str) -> None:
                 self.signals.progress.emit(percent, message)
 
-            result = generate_machine_parameter_map_from_files(
-                weights_csv=self.weights_csv,
-                coordinates_xlsx=self.coordinates_xlsx,
-                output_dir=self.output_dir,
-                resolution=self.resolution,
-                preset_name=self.preset_name,
-                voxel_spacing=self.voxel_spacing,
-                progress_callback=progress,
-            )
+            if self.calibration_result is not None:
+                progress(0, "Reading in-memory calibration weights")
+                rows = machine_parameter_rows_from_calibration_result(self.calibration_result)
+                progress(15, "Reading sample coordinates")
+                coordinates = read_sample_coordinates_xlsx(self.coordinates_xlsx)
+                result = build_machine_parameter_map(
+                    parameters=rows,
+                    coordinates=coordinates,
+                    resolution=self.resolution,
+                    preset_name=self.preset_name,
+                    voxel_spacing=self.voxel_spacing,
+                    coordinates_xlsx=self.coordinates_xlsx,
+                    progress_callback=progress,
+                )
+            else:
+                result = build_machine_parameter_map_from_files(
+                    weights_csv=self.weights_csv,
+                    coordinates_xlsx=self.coordinates_xlsx,
+                    resolution=self.resolution,
+                    preset_name=self.preset_name,
+                    voxel_spacing=self.voxel_spacing,
+                    progress_callback=progress,
+                )
         except Exception as exc:
             self.signals.failed.emit(str(exc))
             return
 
         self.signals.finished.emit(result)
+
+
+class _SaveMachineMapWorkerSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+    progress = Signal(int, str)
+
+
+class _SaveMachineMapWorker(QRunnable):
+    def __init__(self, output_dir: str, result) -> None:
+        super().__init__()
+        self.output_dir = output_dir
+        self.result = result
+        self.signals = _SaveMachineMapWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from capp.machine_map import save_machine_parameter_map_outputs
+
+            self.signals.progress.emit(0, "Writing machine parameter map")
+            saved = save_machine_parameter_map_outputs(
+                output_dir=self.output_dir,
+                model=self.result.model,
+                grid=self.result.grid,
+                parameters=self.result.parameters,
+                coordinates=self.result.coordinates,
+                resolution=self.result.resolution,
+                preset_name=self.result.preset_name,
+                weights_csv=self.result.weights_csv,
+                coordinates_xlsx=self.result.coordinates_xlsx,
+                elapsed_seconds=self.result.elapsed_seconds,
+                voxel_spacing=self.result.voxel_spacing,
+            )
+            self.signals.progress.emit(100, f"Machine parameter map saved: {saved.map_npz.name}")
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+            return
+
+        self.signals.finished.emit(saved)
 
 
 class WorkbenchMainWindow:
@@ -473,11 +571,14 @@ class WorkbenchMainWindow:
         self._last_stl_preview = None
         self._save_outputs_worker = None
         self._model_calibration_worker = None
+        self._save_model_calibration_worker = None
         self._research_artifact_worker = None
         self._machine_map_worker = None
+        self._save_machine_map_worker = None
         self._last_calibration_result = None
         self._last_calibration_geometry_path = None
         self._last_machine_map_result = None
+        self._last_machine_map_export_result = None
         self._calibration_comparison_data = {}
         self._calibration_overlay_source_pixmap = None
         self._machine_map_contour_data = None
@@ -1438,7 +1539,7 @@ class WorkbenchMainWindow:
         self._machine_map_resolution.setRange(8, 2000)
         self._machine_map_resolution.setValue(200)
         map_form.addRow("Contour grid", self._machine_map_resolution)
-        self._machine_map_status = QLabel("Waiting for Model Calibration weights.")
+        self._machine_map_status = QLabel("Waiting for Model Calibration result.")
         self._machine_map_status.setWordWrap(True)
         map_form.addRow("Status", self._machine_map_status)
         self._machine_map_outputs_label = QLabel("-")
@@ -1454,10 +1555,18 @@ class WorkbenchMainWindow:
         self._run_calibration_button.setObjectName("PrimaryButton")
         self._run_calibration_button.clicked.connect(self._run_model_calibration)
         action_row.addWidget(self._run_calibration_button)
+        self._save_calibration_button = QPushButton("Save Calibration")
+        self._save_calibration_button.setEnabled(False)
+        self._save_calibration_button.clicked.connect(self._save_model_calibration)
+        action_row.addWidget(self._save_calibration_button)
         self._generate_machine_map_button = QPushButton("Generate Machine Map")
         self._generate_machine_map_button.setEnabled(False)
         self._generate_machine_map_button.clicked.connect(self._generate_machine_map)
         action_row.addWidget(self._generate_machine_map_button)
+        self._save_machine_map_button = QPushButton("Save Machine Map")
+        self._save_machine_map_button.setEnabled(False)
+        self._save_machine_map_button.clicked.connect(self._save_machine_map)
+        action_row.addWidget(self._save_machine_map_button)
         self._export_research_artifacts_button = QPushButton("Export Research Artifacts")
         self._export_research_artifacts_button.setEnabled(False)
         self._export_research_artifacts_button.clicked.connect(
@@ -2426,8 +2535,10 @@ class WorkbenchMainWindow:
         self._calibration_elapsed_label.setText("-")
         self._calibration_csv_label.setText("-")
         self._machine_map_outputs_label.setText("-")
-        self._machine_map_status.setText("Waiting for Model Calibration weights.")
+        self._machine_map_status.setText("Waiting for Model Calibration result.")
+        self._save_calibration_button.setEnabled(False)
         self._generate_machine_map_button.setEnabled(False)
+        self._save_machine_map_button.setEnabled(False)
         self._export_research_artifacts_button.setEnabled(False)
         self._calibration_details.setPlainText("-")
         self._clear_calibration_comparison()
@@ -2487,8 +2598,8 @@ class WorkbenchMainWindow:
     def _model_calibration_finished(self, result) -> None:
         self._model_calibration_worker = None
         self._last_calibration_result = result
-        output_dir = result.output_dir or Path(self._calibration_output_dir.text().strip())
-        csv_path = output_dir / "model_calibration_weights.csv"
+        self._last_machine_map_result = None
+        self._last_machine_map_export_result = None
         self._calibration_samples_label.setText(str(len(result.samples)))
         self._calibration_progress_bar.setValue(100)
         self._calibration_progress_bar.setFormat("100%")
@@ -2496,12 +2607,11 @@ class WorkbenchMainWindow:
             f"Complete: load {result.target_load_seconds:.2f}s, "
             f"voxelize {result.voxelization_seconds:.2f}s, "
             f"solver CPU time {result.solver_seconds:.2f}s, "
-            f"ROI/loss {result.roi_seconds + result.loss_seconds:.2f}s, "
-            f"save {result.save_seconds:.2f}s"
+            f"ROI/loss {result.roi_seconds + result.loss_seconds:.2f}s"
         )
         self._calibration_loss_label.setText(f"{result.average_loss:.6g}")
         self._calibration_elapsed_label.setText(f"{result.elapsed_seconds:.3f} s")
-        self._calibration_csv_label.setText(str(csv_path))
+        self._calibration_csv_label.setText("Not saved")
         details = []
         for sample in result.samples:
             params = ", ".join(f"{value:.5g}" for value in sample.best.parameters.as_tuple())
@@ -2516,9 +2626,13 @@ class WorkbenchMainWindow:
         self._calibration_details.setPlainText("\n".join(details) if details else "-")
         self._populate_calibration_comparison(result)
         self._append_log(f"Model Calibration complete: {len(result.samples)} sample(s)")
-        self._append_log(f"Model Calibration weights: {csv_path}")
-        self._machine_map_status.setText("Weights ready. Generate the machine parameter map.")
+        self._append_log("Model Calibration result is ready in memory. Save outputs on request.")
+        self._machine_map_status.setText(
+            "Calibration result ready in memory. Generate the machine parameter map or save outputs."
+        )
+        self._save_calibration_button.setEnabled(True)
         self._generate_machine_map_button.setEnabled(True)
+        self._save_machine_map_button.setEnabled(False)
         self._export_research_artifacts_button.setEnabled(True)
         self._set_busy(False, "Model Calibration complete")
 
@@ -2528,6 +2642,65 @@ class WorkbenchMainWindow:
         self._append_log(f"Model Calibration failed: {message}")
         self._set_busy(False, "Model Calibration failed")
         self._QMessageBox.critical(self._window, "Model Calibration failed", message)
+
+    def _save_model_calibration(self) -> None:
+        if self._busy:
+            self._append_log("A task is already in progress.")
+            return
+        result = self._last_calibration_result
+        if result is None or not result.samples:
+            self._QMessageBox.warning(
+                self._window,
+                "No calibration result",
+                "Run Model Calibration before saving outputs.",
+            )
+            return
+        try:
+            output_dir = Path(self._calibration_output_dir.text().strip())
+            if not str(output_dir):
+                raise ValueError("Select an output directory.")
+        except Exception as exc:
+            self._QMessageBox.warning(self._window, "Invalid output", str(exc))
+            return
+
+        geometry_path = self._last_calibration_geometry_path or Path(
+            self._calibration_geometry.text().strip()
+        )
+        self._append_log(f"Saving Model Calibration outputs to: {output_dir}")
+        self._set_busy(True, "Saving Model Calibration outputs...", task="calibration_save")
+        worker = _SaveModelCalibrationWorker(str(output_dir), result, str(geometry_path))
+        worker.signals.progress.connect(self._set_model_calibration_progress)
+        worker.signals.finished.connect(self._model_calibration_save_finished)
+        worker.signals.failed.connect(self._model_calibration_save_failed)
+        self._save_model_calibration_worker = worker
+        self._thread_pool.start(worker)
+
+    def _model_calibration_save_finished(self, output_dir: str, elapsed: float) -> None:
+        from dataclasses import replace
+
+        self._save_model_calibration_worker = None
+        output_path = Path(output_dir)
+        if self._last_calibration_result is not None:
+            self._last_calibration_result = replace(
+                self._last_calibration_result,
+                output_dir=output_path,
+                save_seconds=elapsed,
+            )
+        csv_path = output_path / "model_calibration_weights.csv"
+        self._calibration_csv_label.setText(str(csv_path))
+        self._calibration_progress_bar.setValue(100)
+        self._calibration_progress_bar.setFormat("100%")
+        self._calibration_progress_message.setText(
+            f"Model Calibration outputs saved in {elapsed:.2f}s"
+        )
+        self._append_log(f"Model Calibration outputs saved: {csv_path}")
+        self._set_busy(False, "Model Calibration outputs saved")
+
+    def _model_calibration_save_failed(self, message: str) -> None:
+        self._save_model_calibration_worker = None
+        self._append_log(f"Model Calibration save failed: {message}")
+        self._set_busy(False, "Model Calibration save failed")
+        self._QMessageBox.critical(self._window, "Model Calibration save failed", message)
 
     def _clear_calibration_comparison(self) -> None:
         self._calibration_comparison_data = {}
@@ -2729,17 +2902,15 @@ class WorkbenchMainWindow:
             self._append_log("A task is already in progress.")
             return
         try:
+            calibration_result = self._last_calibration_result
             weights_csv = self._machine_map_weights_csv_path()
             coordinates_xlsx = Path(self._machine_map_coordinates.text().strip())
-            output_dir = Path(self._calibration_output_dir.text().strip())
-            if not weights_csv.exists():
+            if calibration_result is None and not weights_csv.exists():
                 raise ValueError(
-                    "Run Model Calibration first or select an output dir with weights."
+                    "Run Model Calibration first or select an output dir with saved weights."
                 )
             if not coordinates_xlsx.exists():
                 raise ValueError("Select a valid SP coordinate workbook.")
-            if not str(output_dir):
-                raise ValueError("Select an output directory.")
             resolution = int(self._machine_map_resolution.value())
             preset_name = self._machine_map_name.text().strip() or "Machine Map"
             voxel_spacing = self._float(self._calibration_spacing, "Grid spacing")
@@ -2752,15 +2923,18 @@ class WorkbenchMainWindow:
             f"weights={weights_csv}, coordinates={coordinates_xlsx}, "
             f"resolution={resolution}, voxel_spacing={voxel_spacing:g}"
         )
+        self._last_machine_map_result = None
+        self._last_machine_map_export_result = None
+        self._save_machine_map_button.setEnabled(False)
         self._machine_map_status.setText("Starting machine parameter map generation")
         self._set_busy(True, "Generating machine parameter map...", task="machine_map")
         worker = _MachineMapWorker(
             str(weights_csv),
             str(coordinates_xlsx),
-            str(output_dir),
             resolution,
             preset_name,
             voxel_spacing,
+            calibration_result=calibration_result,
         )
         worker.signals.progress.connect(self._set_machine_map_progress)
         worker.signals.finished.connect(self._machine_map_finished)
@@ -2783,6 +2957,70 @@ class WorkbenchMainWindow:
     def _machine_map_finished(self, result) -> None:
         self._machine_map_worker = None
         self._last_machine_map_result = result
+        self._last_machine_map_export_result = None
+        output_dir = Path(self._calibration_output_dir.text().strip())
+        self._machine_map_outputs_label.setText(
+            "\n".join(
+                [
+                    f"Preset: {result.preset_name}",
+                    "State: In memory",
+                    f"Target output: {output_dir}",
+                    "Files: Not saved",
+                ]
+            )
+        )
+        self._machine_map_status.setText(
+            f"{result.preset_name}: {result.sample_count} samples, {result.resolution} x "
+            f"{result.resolution} grid, {result.elapsed_seconds:.2f}s. Save to use as preset."
+        )
+        self._machine_map_preset_name.setText(f"{result.preset_name} (not saved)")
+        self._set_machine_map_contour_data_from_result(result)
+        self._append_log(
+            "Machine parameter map complete: "
+            "result is ready in memory. Save Machine Map to write preset files."
+        )
+        self._save_machine_map_button.setEnabled(True)
+        self._set_busy(False, "Machine parameter map complete")
+
+    def _machine_map_failed(self, message: str) -> None:
+        self._machine_map_worker = None
+        self._machine_map_status.setText(message)
+        self._append_log(f"Machine parameter map failed: {message}")
+        self._set_busy(False, "Machine parameter map failed")
+        self._QMessageBox.critical(self._window, "Machine parameter map failed", message)
+
+    def _save_machine_map(self) -> None:
+        if self._busy:
+            self._append_log("A task is already in progress.")
+            return
+        result = self._last_machine_map_result
+        if result is None:
+            self._QMessageBox.warning(
+                self._window,
+                "No machine map",
+                "Generate a Machine Parameter Map before saving.",
+            )
+            return
+        try:
+            output_dir = Path(self._calibration_output_dir.text().strip())
+            if not str(output_dir):
+                raise ValueError("Select an output directory.")
+        except Exception as exc:
+            self._QMessageBox.warning(self._window, "Invalid output", str(exc))
+            return
+
+        self._append_log(f"Saving Machine Parameter Map to: {output_dir}")
+        self._set_busy(True, "Saving Machine Parameter Map...", task="machine_map_save")
+        worker = _SaveMachineMapWorker(str(output_dir), result)
+        worker.signals.progress.connect(self._set_machine_map_progress)
+        worker.signals.finished.connect(self._machine_map_save_finished)
+        worker.signals.failed.connect(self._machine_map_save_failed)
+        self._save_machine_map_worker = worker
+        self._thread_pool.start(worker)
+
+    def _machine_map_save_finished(self, result) -> None:
+        self._save_machine_map_worker = None
+        self._last_machine_map_export_result = result
         self._machine_map_outputs_label.setText(
             "\n".join(
                 [
@@ -2796,26 +3034,50 @@ class WorkbenchMainWindow:
             )
         )
         self._machine_map_status.setText(
-            f"{result.preset_name}: {result.sample_count} samples, {result.resolution} x "
-            f"{result.resolution} grid, {result.elapsed_seconds:.2f}s"
+            f"{result.preset_name}: saved {result.sample_count} samples, "
+            f"{result.resolution} x {result.resolution} grid"
         )
         self._machine_map_path.setText(str(result.map_npz))
         self._machine_preset.setCurrentText("Machine Map")
         self._machine_map_preset_name.setText(result.preset_name)
         self._load_machine_map_contour(result.map_npz)
         self._append_log(
-            "Machine parameter map complete: "
+            "Machine parameter map saved: "
             f"{result.map_npz}, {result.metadata_json}, {result.grid_csv}, {result.sample_csv}"
         )
-        self._append_log(f"Machine preset set to generated map: {result.preset_name}.")
-        self._set_busy(False, "Machine parameter map complete")
+        self._append_log(f"Machine preset set to saved map: {result.preset_name}.")
+        self._set_busy(False, "Machine parameter map saved")
 
-    def _machine_map_failed(self, message: str) -> None:
-        self._machine_map_worker = None
+    def _machine_map_save_failed(self, message: str) -> None:
+        self._save_machine_map_worker = None
         self._machine_map_status.setText(message)
-        self._append_log(f"Machine parameter map failed: {message}")
-        self._set_busy(False, "Machine parameter map failed")
-        self._QMessageBox.critical(self._window, "Machine parameter map failed", message)
+        self._append_log(f"Machine parameter map save failed: {message}")
+        self._set_busy(False, "Machine parameter map save failed")
+        self._QMessageBox.critical(self._window, "Machine parameter map save failed", message)
+
+    def _set_machine_map_contour_data_from_result(self, result) -> None:
+        import numpy as np
+
+        if not hasattr(self, "_machine_map_contour_label"):
+            return
+        self._machine_map_contour_data = {
+            name: np.asarray(result.grid[name], dtype=np.float64)
+            for name in ("NX", "PX", "NY", "PY", "EPS", "IDP")
+            if name in result.grid
+        }
+        sample_x = []
+        sample_y = []
+        coordinate_by_sample = {coord.sample: coord for coord in result.coordinates}
+        for row in result.parameters:
+            coordinate = coordinate_by_sample.get(row.sample)
+            if coordinate is None:
+                continue
+            x_value, y_value = result.model.normalizer.normalize(coordinate.x, coordinate.y)
+            sample_x.append(x_value)
+            sample_y.append(y_value)
+        self._machine_map_contour_data["_sample_x"] = np.asarray(sample_x, dtype=np.float64)
+        self._machine_map_contour_data["_sample_y"] = np.asarray(sample_y, dtype=np.float64)
+        self._refresh_machine_map_contour()
 
     def _load_machine_map_contour(self, path, silent: bool = False) -> None:
         import numpy as np
@@ -3198,14 +3460,36 @@ class WorkbenchMainWindow:
             self._run_calibration_button.setText(
                 "Running..." if busy and task == "model_calibration" else "Run Model Calibration"
             )
+        if hasattr(self, "_save_calibration_button"):
+            can_save_calibration = (
+                (not busy)
+                and self._last_calibration_result is not None
+                and bool(self._last_calibration_result.samples)
+            )
+            self._save_calibration_button.setEnabled(can_save_calibration)
+            self._save_calibration_button.setText(
+                "Saving..." if busy and task == "calibration_save" else "Save Calibration"
+            )
         if hasattr(self, "_generate_machine_map_button"):
             try:
-                can_generate_map = (not busy) and self._machine_map_weights_csv_path().exists()
+                can_generate_map = (not busy) and (
+                    (
+                        self._last_calibration_result is not None
+                        and bool(self._last_calibration_result.samples)
+                    )
+                    or self._machine_map_weights_csv_path().exists()
+                )
             except Exception:
                 can_generate_map = False
             self._generate_machine_map_button.setEnabled(can_generate_map)
             self._generate_machine_map_button.setText(
                 "Generating..." if busy and task == "machine_map" else "Generate Machine Map"
+            )
+        if hasattr(self, "_save_machine_map_button"):
+            can_save_machine_map = (not busy) and self._last_machine_map_result is not None
+            self._save_machine_map_button.setEnabled(can_save_machine_map)
+            self._save_machine_map_button.setText(
+                "Saving..." if busy and task == "machine_map_save" else "Save Machine Map"
             )
         if hasattr(self, "_export_research_artifacts_button"):
             can_export_research = (

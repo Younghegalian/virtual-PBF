@@ -71,6 +71,21 @@ class MachineMapExportResult:
 
 
 @dataclass(frozen=True)
+class MachineMapGenerationResult:
+    model: MachineParameterMap
+    grid: dict[str, np.ndarray]
+    parameters: list[MachineParameterRow]
+    coordinates: list[SampleCoordinate]
+    resolution: int
+    sample_count: int
+    elapsed_seconds: float
+    preset_name: str = "Machine Map"
+    voxel_spacing: float | None = None
+    weights_csv: Path | None = None
+    coordinates_xlsx: Path | None = None
+
+
+@dataclass(frozen=True)
 class MachineParameterMapMetadata:
     path: Path
     preset_name: str
@@ -166,6 +181,47 @@ def generate_machine_parameter_map_from_files(
     normalizer: CoordinateNormalizer | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> MachineMapExportResult:
+    result = build_machine_parameter_map_from_files(
+        weights_csv=weights_csv,
+        coordinates_xlsx=coordinates_xlsx,
+        resolution=resolution,
+        preset_name=preset_name,
+        voxel_spacing=voxel_spacing,
+        normalizer=normalizer,
+        progress_callback=progress_callback,
+        emit_complete=False,
+    )
+    if progress_callback is not None:
+        progress_callback(75, "Writing machine parameter map")
+    saved = save_machine_parameter_map_outputs(
+        output_dir=output_dir,
+        model=result.model,
+        grid=result.grid,
+        parameters=result.parameters,
+        coordinates=result.coordinates,
+        resolution=result.resolution,
+        preset_name=result.preset_name,
+        weights_csv=result.weights_csv,
+        coordinates_xlsx=result.coordinates_xlsx,
+        elapsed_seconds=result.elapsed_seconds,
+        voxel_spacing=result.voxel_spacing,
+    )
+    if progress_callback is not None:
+        progress_callback(100, f"Machine parameter map saved: {saved.map_npz.name}")
+    return saved
+
+
+def build_machine_parameter_map_from_files(
+    *,
+    weights_csv: str | Path,
+    coordinates_xlsx: str | Path,
+    resolution: int = 200,
+    preset_name: str = "Machine Map",
+    voxel_spacing: float | None = None,
+    normalizer: CoordinateNormalizer | None = None,
+    progress_callback: ProgressCallback | None = None,
+    emit_complete: bool = True,
+) -> MachineMapGenerationResult:
     started = perf_counter()
     if progress_callback is not None:
         progress_callback(0, "Reading calibration weights")
@@ -177,30 +233,71 @@ def generate_machine_parameter_map_from_files(
 
     if progress_callback is not None:
         progress_callback(30, "Fitting thin-plate parameter map")
-    model = MachineParameterMap.fit(rows, coordinates, normalizer=normalizer)
+    return build_machine_parameter_map(
+        parameters=rows,
+        coordinates=coordinates,
+        resolution=resolution,
+        preset_name=preset_name,
+        voxel_spacing=voxel_spacing,
+        normalizer=normalizer,
+        weights_csv=weights_csv,
+        coordinates_xlsx=coordinates_xlsx,
+        started_at=started,
+        progress_callback=progress_callback,
+        emit_complete=emit_complete,
+    )
+
+
+def build_machine_parameter_map(
+    *,
+    parameters: list[MachineParameterRow],
+    coordinates: list[SampleCoordinate],
+    resolution: int = 200,
+    preset_name: str = "Machine Map",
+    voxel_spacing: float | None = None,
+    normalizer: CoordinateNormalizer | None = None,
+    weights_csv: str | Path | None = None,
+    coordinates_xlsx: str | Path | None = None,
+    started_at: float | None = None,
+    progress_callback: ProgressCallback | None = None,
+    emit_complete: bool = True,
+) -> MachineMapGenerationResult:
+    started = perf_counter() if started_at is None else started_at
+    if progress_callback is not None and started_at is None:
+        progress_callback(30, "Fitting thin-plate parameter map")
+    model = MachineParameterMap.fit(parameters, coordinates, normalizer=normalizer)
 
     if progress_callback is not None:
         progress_callback(55, "Evaluating machine parameter grid")
     grid = model.to_grid(resolution=resolution)
 
-    if progress_callback is not None:
-        progress_callback(75, "Writing machine parameter map")
-    result = save_machine_parameter_map_outputs(
-        output_dir=output_dir,
+    elapsed = perf_counter() - started
+    if emit_complete and progress_callback is not None:
+        progress_callback(100, "Machine parameter map ready in memory")
+    return MachineMapGenerationResult(
         model=model,
         grid=grid,
-        parameters=rows,
+        parameters=list(parameters),
         coordinates=coordinates,
-        resolution=resolution,
-        preset_name=preset_name,
-        weights_csv=weights_csv,
-        coordinates_xlsx=coordinates_xlsx,
-        elapsed_seconds=perf_counter() - started,
+        resolution=int(resolution),
+        sample_count=len(parameters),
+        elapsed_seconds=elapsed,
+        preset_name=preset_name.strip() or "Machine Map",
         voxel_spacing=voxel_spacing,
+        weights_csv=Path(weights_csv) if weights_csv is not None else None,
+        coordinates_xlsx=Path(coordinates_xlsx) if coordinates_xlsx is not None else None,
     )
-    if progress_callback is not None:
-        progress_callback(100, f"Machine parameter map saved: {result.map_npz.name}")
-    return result
+
+
+def machine_parameter_rows_from_calibration_result(result) -> list[MachineParameterRow]:
+    return [
+        MachineParameterRow(
+            sample.sample,
+            RmcParameterSet.from_sequence(sample.best.parameters.as_tuple()),
+            loss=sample.best.loss.total,
+        )
+        for sample in result.samples
+    ]
 
 
 def read_model_calibration_weights_csv(path: str | Path) -> list[MachineParameterRow]:

@@ -431,13 +431,14 @@ def run_model_calibration(
             save_seconds=save_seconds,
         )
     if progress_callback is not None:
+        save_part = f", save {run_result.save_seconds:.2f}s" if output_path is not None else ""
         progress_callback(
             100,
             (
                 "Model calibration complete "
                 f"(solver CPU time {run_result.solver_seconds:.2f}s, "
-                f"ROI/loss {run_result.roi_seconds + run_result.loss_seconds:.2f}s, "
-                f"save {run_result.save_seconds:.2f}s)"
+                f"ROI/loss {run_result.roi_seconds + run_result.loss_seconds:.2f}s"
+                f"{save_part})"
             ),
         )
     return run_result
@@ -448,7 +449,7 @@ def run_model_calibration_from_paths(
     geometry_path: str | Path,
     sample_dir: str | Path,
     voxel_spacing: float,
-    output_dir: str | Path,
+    output_dir: str | Path | None = None,
     options: ModelCalibrationOptions | None = None,
     sample_names: set[str] | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -513,15 +514,21 @@ def run_model_calibration_from_paths(
         save_seconds=result.save_seconds,
     )
     if progress_callback is not None:
+        save_part = f", save {result.save_seconds:.2f}s" if result.output_dir is not None else ""
+        state = (
+            f"Model calibration outputs saved: {result.output_dir}"
+            if result.output_dir is not None
+            else "Model calibration complete in memory"
+        )
         progress_callback(
             100,
             (
-                f"Model calibration outputs saved: {output_dir} "
+                f"{state} "
                 f"(load {result.target_load_seconds:.2f}s, "
                 f"voxelize {result.voxelization_seconds:.2f}s, "
                 f"solver CPU time {result.solver_seconds:.2f}s, "
-                f"ROI/loss {result.roi_seconds + result.loss_seconds:.2f}s, "
-                f"save {result.save_seconds:.2f}s)"
+                f"ROI/loss {result.roi_seconds + result.loss_seconds:.2f}s"
+                f"{save_part})"
             ),
         )
     return result

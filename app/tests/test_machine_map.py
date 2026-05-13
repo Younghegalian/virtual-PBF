@@ -6,6 +6,7 @@ import pytest
 
 from capp.calibration.rmc import RmcParameterSet
 from capp.machine_map import (
+    build_machine_parameter_map_from_files,
     CoordinateNormalizer,
     MachineParameterMap,
     MachineParameterRow,
@@ -93,6 +94,24 @@ def test_read_model_calibration_weights_csv_reads_parameter_rows(tmp_path: Path)
     assert [row.sample for row in rows] == ["A1", "A2", "B1"]
     assert rows[0].parameters.as_tuple() == (0.1, 0.2, 0.3, 0.4, 0.01, 0.2)
     assert rows[0].loss == 1.5
+
+
+def test_build_machine_parameter_map_from_files_keeps_result_in_memory(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    coordinates = tmp_path / "sp_coordinates.xlsx"
+    output_dir = tmp_path / "map"
+    _write_minimal_weights_csv(weights)
+    _write_minimal_coordinates_xlsx(coordinates)
+
+    result = build_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates,
+        resolution=9,
+    )
+
+    assert result.sample_count == 3
+    assert result.grid["NX"].shape == (9, 9)
+    assert not output_dir.exists()
 
 
 def test_generate_machine_parameter_map_from_files_writes_solver_ready_outputs(tmp_path: Path):
