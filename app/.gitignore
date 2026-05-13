@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+!src/capp_native*.pyd
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -8,6 +9,7 @@ build/
 dist/
 *.egg-info/
 outputs/
+native/build-ninja/
 CMakeCache.txt
 CMakeFiles/
 cmake-build-*/

@@ -526,6 +526,16 @@ class WorkbenchMainWindow:
                 background: #edf0f3;
                 border-color: #d1d6de;
             }
+            QPlainTextEdit#DetailsText {
+                background: #ffffff;
+                color: #111827;
+                border: 1px solid #b7c0ca;
+                border-radius: 1px;
+                padding: 3px;
+                selection-background-color: #bfdbfe;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 9px;
+            }
             QPushButton {
                 min-height: 19px;
                 min-width: 0;
@@ -754,14 +764,6 @@ class WorkbenchMainWindow:
         spacing_row.addWidget(estimate)
         geometry_form.addRow("Grid spacing (mm)", spacing_row)
 
-        self._stl_display_mode = QComboBox()
-        self._stl_display_mode.addItems(["Shaded", "Overhang angle"])
-        self._stl_display_mode.currentTextChanged.connect(self._refresh_stl_preview_style)
-        geometry_form.addRow("STL display", self._stl_display_mode)
-
-        self._overhang_limit = QLineEdit("60")
-        self._overhang_limit.editingFinished.connect(self._refresh_stl_preview_style)
-        geometry_form.addRow("Overhang max (deg)", self._overhang_limit)
         left_layout.addWidget(geometry_box)
 
         computation_box = QGroupBox("Computation Preset")
@@ -962,7 +964,9 @@ class WorkbenchMainWindow:
         right_layout.setSpacing(3)
         from capp.workbench.preview import PreviewPane
 
-        self._preview = PreviewPane()
+        self._preview = PreviewPane(show_stl_controls=True)
+        self._preview.stl_display_mode.currentTextChanged.connect(self._refresh_stl_preview_style)
+        self._preview.overhang_limit.editingFinished.connect(self._refresh_stl_preview_style)
         right_layout.addWidget(self._preview.widget, 1)
 
         summary_box = QGroupBox("Run Summary")
@@ -1232,6 +1236,7 @@ class WorkbenchMainWindow:
         progress_form.addRow("Elapsed", self._calibration_elapsed_label)
         progress_form.addRow("Weights CSV", self._calibration_csv_label)
         self._calibration_details = QPlainTextEdit()
+        self._calibration_details.setObjectName("DetailsText")
         self._calibration_details.setReadOnly(True)
         self._calibration_details.setMaximumHeight(130)
         self._calibration_details.setPlainText("-")
@@ -1570,9 +1575,9 @@ class WorkbenchMainWindow:
         self._thread_pool.start(worker)
 
     def _stl_preview_display_settings(self) -> tuple[str, float]:
-        mode = self._stl_display_mode.currentText()
+        mode = self._preview.stl_display_mode.currentText()
         try:
-            overhang_limit = float(self._overhang_limit.text())
+            overhang_limit = float(self._preview.overhang_limit.text())
         except ValueError:
             overhang_limit = 60.0
         return mode, max(1.0, overhang_limit)
