@@ -2243,7 +2243,7 @@ class WorkbenchMainWindow:
         self._machine_map_status.setText("Waiting for Model Calibration weights.")
         self._generate_machine_map_button.setEnabled(False)
         self._export_research_artifacts_button.setEnabled(False)
-        self._calibration_details.setText("-")
+        self._calibration_details.setPlainText("-")
         self._clear_calibration_comparison()
         self._calibration_progress_bar.setValue(0)
         self._calibration_progress_bar.setFormat("0%")
@@ -2327,7 +2327,7 @@ class WorkbenchMainWindow:
                 f"ROI/loss={sample.roi_seconds + sample.loss_seconds:.2f}s, "
                 f"params=[{params}], evals={sample.evaluations}"
             )
-        self._calibration_details.setText("\n".join(details) if details else "-")
+        self._calibration_details.setPlainText("\n".join(details) if details else "-")
         self._populate_calibration_comparison(result)
         self._append_log(f"Model Calibration complete: {len(result.samples)} sample(s)")
         self._append_log(f"Model Calibration weights: {csv_path}")
