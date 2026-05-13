@@ -200,6 +200,23 @@ def simulation_rois(
     return extract_model_calibration_roi(x_slice), extract_model_calibration_roi(y_slice)
 
 
+def validate_model_calibration_grid_resolution(grid: VoxelGrid) -> None:
+    roi_x, roi_y = simulation_rois(grid.data)
+    empty_axes = []
+    if roi_x.size == 0:
+        empty_axes.append("X")
+    if roi_y.size == 0:
+        empty_axes.append("Y")
+    if not empty_axes:
+        return
+
+    axes = "/".join(empty_axes)
+    raise ValueError(
+        f"Model Calibration {axes} ROI window is empty for voxel grid {grid.shape} "
+        f"at {grid.spacing:g} mm spacing. Reduce Grid spacing and run again."
+    )
+
+
 def discover_model_calibration_targets(
     sample_dir: str | Path,
     *,
@@ -372,6 +389,7 @@ def run_model_calibration(
     if not targets:
         raise ValueError("At least one model calibration target is required.")
     options = options or ModelCalibrationOptions()
+    validate_model_calibration_grid_resolution(grid)
     started = perf_counter()
     worker_count = min(options.max_workers, options.max_evaluations)
     samples = _run_model_calibration_shared_candidates(

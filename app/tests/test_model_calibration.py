@@ -14,6 +14,7 @@ from capp.calibration.model_calibration import (
     run_model_calibration,
     save_model_calibration_outputs,
     simulation_rois,
+    validate_model_calibration_grid_resolution,
 )
 from capp.calibration.roi import extract_model_calibration_roi
 from capp.domain import NeighborhoodModel, SimulationResult, SolverBackend, VoxelGrid
@@ -66,6 +67,18 @@ def test_simulation_rois_extracts_x_and_y_windows():
     assert roi_y.ndim == 2
     assert roi_x.shape[0] > 0
     assert roi_y.shape[0] > 0
+
+
+def test_model_calibration_rejects_grid_too_coarse_for_roi_window():
+    coarse_grid = VoxelGrid(data=np.ones((84, 24, 22), dtype=bool), spacing=0.5)
+
+    try:
+        validate_model_calibration_grid_resolution(coarse_grid)
+    except ValueError as exc:
+        assert "ROI window is empty" in str(exc)
+        assert "Reduce Grid spacing" in str(exc)
+    else:
+        raise AssertionError("Expected coarse model calibration grid to be rejected.")
 
 
 def test_discover_model_calibration_targets_reads_y_or_z_roi_pairs(tmp_path):

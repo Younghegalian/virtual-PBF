@@ -1168,17 +1168,17 @@ class WorkbenchMainWindow:
         input_box = QGroupBox("Data In")
         input_form = QFormLayout(input_box)
         self._configure_form(input_form)
-        self._calibration_geometry = QLineEdit()
+        self._calibration_geometry = QLineEdit(str(self._default_calibration_geometry_path()))
         input_form.addRow(
             "Calibration STL",
             self._file_row(self._calibration_geometry, self._browse_calibration_geometry),
         )
-        self._calibration_sample_dir = QLineEdit()
+        self._calibration_sample_dir = QLineEdit(str(self._default_calibration_sample_dir()))
         input_form.addRow(
             "ROI sample folder",
             self._file_row(self._calibration_sample_dir, self._browse_calibration_sample_dir),
         )
-        self._calibration_spacing = QLineEdit("0.5")
+        self._calibration_spacing = QLineEdit("0.1")
         input_form.addRow("Grid spacing (mm)", self._calibration_spacing)
         self._calibration_sample_filter = QLineEdit()
         input_form.addRow("Sample filter", self._calibration_sample_filter)
@@ -1568,6 +1568,20 @@ class WorkbenchMainWindow:
         if path.exists():
             return path
         return Path("..") / "data" / "machine_map" / "sp_coordinates.xlsx"
+
+    def _default_calibration_geometry_path(self) -> Path:
+        project_root = Path(__file__).resolve().parents[4]
+        path = project_root / "data" / "geometry_examples" / "4Calibration" / "3D_calibration.stl"
+        if path.exists():
+            return path
+        return Path("..") / "data" / "geometry_examples" / "4Calibration" / "3D_calibration.stl"
+
+    def _default_calibration_sample_dir(self) -> Path:
+        project_root = Path(__file__).resolve().parents[4]
+        path = project_root / "data" / "calibration_samples"
+        if path.exists():
+            return path
+        return Path("..") / "data" / "calibration_samples"
 
     def _default_machine_map_path(self) -> Path:
         path = (
