@@ -347,6 +347,7 @@ class WorkbenchMainWindow:
         self._calibration_overlay_source_pixmap = None
         self._machine_map_contour_data = None
         self._machine_map_contour_source_pixmap = None
+        self._result_slice_source_image = None
         self._thread_pool = QThreadPool.globalInstance()
         self._log = self._make_log()
 
@@ -360,10 +361,14 @@ class WorkbenchMainWindow:
 
         splitter = QSplitter(self._Qt.Orientation.Horizontal)
         splitter.setObjectName("MainSplitter")
+        splitter.setHandleWidth(3)
         splitter.addWidget(self._navigation)
         splitter.addWidget(self._stack)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        self._main_splitter = splitter
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -387,12 +392,22 @@ class WorkbenchMainWindow:
         self._window.statusBar().showMessage("Ready")
         self._apply_style()
         self._navigation.setCurrentRow(0)
+        self._sync_main_splitter_sizes()
 
     def show(self, maximized: bool = False) -> None:
         if maximized:
             self._window.showMaximized()
         else:
             self._window.show()
+        self._sync_main_splitter_sizes()
+
+    def _sync_main_splitter_sizes(self) -> None:
+        if not hasattr(self, "_main_splitter"):
+            return
+        nav_width = max(1, self._navigation.width() or self._navigation.minimumWidth() or 204)
+        total_width = max(nav_width + 1, self._main_splitter.width() or self._window.width())
+        content_width = max(1, total_width - nav_width - self._main_splitter.handleWidth())
+        self._main_splitter.setSizes([nav_width, content_width])
 
     def _add_feature(self, icon_key: str, title: str, widget: object) -> None:
         from PySide6.QtWidgets import QListWidgetItem
@@ -1031,8 +1046,8 @@ class WorkbenchMainWindow:
 
         left = QWidget()
         left.setObjectName("ResultPane")
-        left.setMinimumWidth(400)
-        left.setMaximumWidth(520)
+        left.setMinimumWidth(360)
+        left.setMaximumWidth(460)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
@@ -1083,7 +1098,8 @@ class WorkbenchMainWindow:
 
         self._slice_label = QLabel("-")
         self._slice_label.setObjectName("SliceView")
-        self._slice_label.setMinimumSize(360, 300)
+        self._slice_label.setMinimumSize(320, 280)
+        self._slice_label.setMargin(6)
         self._slice_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         slice_title = QLabel("Slice View")
         slice_title.setObjectName("PanelSubTitle")
@@ -1121,7 +1137,9 @@ class WorkbenchMainWindow:
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 5)
-        splitter.setSizes([460, 1220])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setSizes([400, 1220])
         layout.addWidget(splitter)
         return panel
 
@@ -1426,6 +1444,9 @@ class WorkbenchMainWindow:
     def _set_page(self, index: int) -> None:
         if index >= 0:
             self._stack.setCurrentIndex(index)
+        if index == 1:
+            self._sync_main_splitter_sizes()
+            self._fit_result_slice_pixmap()
 
     def _browse_part(self) -> None:
         path = self._open_file("Select part geometry", "STL files (*.stl);;All files (*.*)")
@@ -1925,7 +1946,13 @@ class WorkbenchMainWindow:
             image = volume[index, :, :].T
         else:
             image = volume[:, index, :].T
-        self._slice_label.setPixmap(self._array_to_pixmap(image))
+        self._result_slice_source_image = image
+        self._fit_result_slice_pixmap()
+
+    def _fit_result_slice_pixmap(self) -> None:
+        if self._result_slice_source_image is None or not hasattr(self, "_slice_label"):
+            return
+        self._slice_label.setPixmap(self._array_to_pixmap(self._result_slice_source_image))
 
     def _selected_result_volume(self):
         if self._loaded_result is None:
@@ -1949,6 +1976,11 @@ class WorkbenchMainWindow:
                 array = 255.0 * (array - array.min()) / (array.max() - array.min())
             array = array.astype(np.uint8)
 
+        if array.ndim != 2:
+            raise ValueError("Slice preview requires a 2D image.")
+        pad_y = max(4, int(round(array.shape[0] * 0.04)))
+        pad_x = max(4, int(round(array.shape[1] * 0.04)))
+        array = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x)), mode="constant")
         array = np.ascontiguousarray(np.flipud(array))
         height, width = array.shape
         qimage = QImage(
@@ -1959,8 +1991,11 @@ class WorkbenchMainWindow:
             QImage.Format.Format_Grayscale8,
         ).copy()
         pixmap = QPixmap.fromImage(qimage)
+        target_size = self._slice_label.contentsRect().size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            target_size = self._slice_label.size()
         return pixmap.scaled(
-            self._slice_label.size(),
+            target_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
