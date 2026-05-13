@@ -397,8 +397,6 @@ def run_model_calibration(
     validate_model_calibration_grid_resolution(grid)
     started = perf_counter()
     worker_count = min(options.max_workers, options.max_evaluations)
-    if options.backend is SolverBackend.CUDA:
-        worker_count = 1
     samples = _run_model_calibration_shared_candidates(
         grid,
         targets,
@@ -999,13 +997,41 @@ def _run_model_calibration_shared_candidates(
     best_by_sample: list[ModelCalibrationEvaluation | None] = [None] * len(targets)
     loss_seconds_by_sample = [0.0] * len(targets)
     completed = 0
+    running_progress_by_candidate: dict[int, float] = {}
     completed_lock = Lock()
 
-    def report_completion(message: str) -> None:
+    def overall_progress_locked() -> int:
+        running_fraction = sum(running_progress_by_candidate.values())
+        total_fraction = min(float(options.max_evaluations), completed + running_fraction)
+        return int(total_fraction * 100 / options.max_evaluations)
+
+    def report_start(candidate_index: int, message: str) -> None:
+        with completed_lock:
+            running_progress_by_candidate[candidate_index] = 0.0
+            percent = overall_progress_locked()
+        if progress_callback is not None:
+            progress_callback(percent, message)
+
+    def report_solver_progress(candidate_index: int, percent: int, message: str) -> None:
+        with completed_lock:
+            progress_fraction = min(0.95, max(0, min(100, percent)) / 100)
+            running_progress_by_candidate[candidate_index] = max(
+                running_progress_by_candidate.get(candidate_index, 0.0),
+                progress_fraction,
+            )
+            overall_percent = overall_progress_locked()
+        if progress_callback is not None:
+            progress_callback(
+                overall_percent,
+                f"Candidate {candidate_index}/{options.max_evaluations}: {message}",
+            )
+
+    def report_completion(candidate_index: int, message: str) -> None:
         nonlocal completed
         with completed_lock:
+            running_progress_by_candidate.pop(candidate_index, None)
             completed += 1
-            percent = int(completed * 100 / options.max_evaluations)
+            percent = overall_progress_locked()
         if progress_callback is not None:
             progress_callback(percent, message)
 
@@ -1013,16 +1039,13 @@ def _run_model_calibration_shared_candidates(
         candidate_index: int,
         candidate: ModelCalibrationParameterSet,
     ) -> tuple[int, list[ModelCalibrationEvaluation], float, float, float]:
-        with completed_lock:
-            running_percent = int(completed * 100 / options.max_evaluations)
-        if progress_callback is not None:
-            progress_callback(
-                running_percent,
-                (
-                    f"Running candidate {candidate_index}/{options.max_evaluations} "
-                    f"with {_SOLVER_LABELS.get(options.backend, options.backend.value)}"
-                ),
-            )
+        report_start(
+            candidate_index,
+            (
+                f"Running candidate {candidate_index}/{options.max_evaluations} "
+                f"with {_SOLVER_LABELS.get(options.backend, options.backend.value)}"
+            ),
+        )
         candidate_options = ModelCalibrationOptions(
             max_evaluations=options.max_evaluations,
             backend=options.backend,
@@ -1042,12 +1065,7 @@ def _run_model_calibration_shared_candidates(
         if progress_callback is not None:
 
             def solver_progress(percent: int, message: str) -> None:
-                with completed_lock:
-                    running_fraction = completed + min(0.95, max(0, min(100, percent)) / 100)
-                progress_callback(
-                    int(running_fraction * 100 / options.max_evaluations),
-                    f"Candidate {candidate_index}/{options.max_evaluations}: {message}",
-                )
+                report_solver_progress(candidate_index, percent, message)
 
             solver_progress_callback = solver_progress
 
@@ -1123,6 +1141,7 @@ def _run_model_calibration_shared_candidates(
             evaluation.loss.total for evaluation in best_by_sample if evaluation is not None
         )
         report_completion(
+            candidate_index,
             f"{phase} candidate {candidate_index}/{options.max_evaluations} shared across "
             f"{len(targets)} samples: solver {solver_seconds:.2f}s, "
             f"ROI/loss {roi_seconds + loss_seconds:.2f}s, best loss {best_loss:.4g}"

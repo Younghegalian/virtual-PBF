@@ -274,7 +274,7 @@ def test_model_calibration_reports_candidate_start_progress(monkeypatch):
     assert any("Candidate 1/2: CUDA layer 12/24" in msg for _, msg in progress_messages)
 
 
-def test_cuda_model_calibration_uses_one_gpu_worker(monkeypatch):
+def test_cuda_model_calibration_keeps_requested_parallel_workers(monkeypatch):
     from capp.calibration import model_calibration as module
 
     roi = np.zeros((23, 57), dtype=bool)
@@ -314,7 +314,66 @@ def test_cuda_model_calibration_uses_one_gpu_worker(monkeypatch):
         progress_callback=lambda percent, message: progress_messages.append((percent, message)),
     )
 
-    assert any("for 1 samples on 1 workers" in msg for _, msg in progress_messages)
+    assert any("for 1 samples on 4 workers" in msg for _, msg in progress_messages)
+    completion_percents = [
+        percent for percent, message in progress_messages if message.startswith("global candidate")
+    ]
+    assert completion_percents == [25, 50, 75, 100]
+
+
+def test_parallel_candidate_solver_progress_is_aggregated(monkeypatch):
+    from threading import Barrier
+
+    from capp.calibration import model_calibration as module
+
+    roi = np.zeros((23, 57), dtype=bool)
+    roi[5:15, 20:30] = True
+    barrier = Barrier(4)
+
+    class FakePipeline:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def run_voxel_grid(self, grid, parameters, progress_callback=None):
+            barrier.wait(timeout=5)
+            if progress_callback is not None:
+                progress_callback(50, "CUDA layer 12/24")
+            volume = np.ones(grid.shape, dtype=bool)
+            return SimulationResult(
+                probability=np.full(grid.shape, 100, dtype=np.uint8),
+                binary=volume,
+                voxel=grid.data,
+                spacing=grid.spacing,
+                origin=grid.origin,
+                rest_volume=100.0,
+                probability_density=100.0,
+                elapsed_seconds=0.01,
+            )
+
+    monkeypatch.setattr(module, "create_solver", lambda _parameters: object())
+    monkeypatch.setattr(module, "SimulationPipeline", FakePipeline)
+    monkeypatch.setattr(module, "simulation_rois", lambda _binary: (roi, roi))
+
+    progress_messages = []
+    run_model_calibration(
+        VoxelGrid(data=np.ones((4, 4, 4), dtype=bool), spacing=0.1),
+        [module.ModelCalibrationTarget(sample="A1", roi_x=roi, roi_y=roi)],
+        options=ModelCalibrationOptions(
+            max_evaluations=4,
+            backend=SolverBackend.CUDA,
+            max_workers=4,
+            optimizer="sobol",
+        ),
+        progress_callback=lambda percent, message: progress_messages.append((percent, message)),
+    )
+
+    running_progress = [
+        percent
+        for percent, message in progress_messages
+        if message.endswith("CUDA layer 12/24")
+    ]
+    assert running_progress
+    assert max(running_progress) > 25
 
 
 def test_adaptive_sobol_uses_full_evaluation_budget(monkeypatch):
