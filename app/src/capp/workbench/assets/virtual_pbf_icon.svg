@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="42" y1="22" x2="218" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.58" stop-color="#1e3a5f"/>
+      <stop offset="1" stop-color="#0b7285"/>
+    </linearGradient>
+    <linearGradient id="melt" x1="82" y1="142" x2="184" y2="195" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="0.55" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#ef4444"/>
+    </linearGradient>
+    <linearGradient id="cubeTop" x1="82" y1="62" x2="176" y2="122" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="cubeSide" x1="122" y1="98" x2="190" y2="158" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#020617" flood-opacity="0.38"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="54" fill="url(#bg)"/>
+  <g filter="url(#softShadow)">
+    <path d="M63 155c0-16 30-29 67-29s67 13 67 29-30 29-67 29-67-13-67-29z" fill="#0f172a" opacity="0.35"/>
+    <path d="M58 166c15-16 37-25 66-25 31 0 57 11 74 27-11 25-36 43-69 43-32 0-59-18-71-45z" fill="url(#melt)"/>
+    <path d="M75 164c11-8 29-14 52-14 25 0 46 7 59 17-10 14-30 24-57 24-26 0-46-10-54-27z" fill="#fed7aa" opacity="0.28"/>
+    <path d="M84 91l44-27 45 27-45 27-44-27z" fill="url(#cubeTop)"/>
+    <path d="M84 91l44 27v54l-44-27V91z" fill="#0891b2"/>
+    <path d="M128 118l45-27v54l-45 27v-54z" fill="url(#cubeSide)"/>
+    <path d="M96 116l20 12v26l-20-12v-26z" fill="#67e8f9" opacity="0.72"/>
+    <path d="M141 127l20-12v27l-20 12v-27z" fill="#bfdbfe" opacity="0.6"/>
+    <circle cx="113" cy="94" r="5" fill="#0f172a"/>
+    <circle cx="143" cy="94" r="5" fill="#0f172a"/>
+    <path d="M119 105c6 6 12 6 18 0" fill="none" stroke="#0f172a" stroke-width="5" stroke-linecap="round"/>
+    <path d="M187 63l6 14 14 6-14 6-6 14-6-14-14-6 14-6 6-14z" fill="#fef3c7"/>
+    <path d="M67 55l4 9 9 4-9 4-4 9-4-9-9-4 9-4 4-9z" fill="#bae6fd"/>
+  </g>
+</svg>

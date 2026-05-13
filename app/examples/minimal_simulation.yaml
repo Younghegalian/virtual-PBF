@@ -1,0 +1,18 @@
+geometry_path: ../../Geometry_examples/4CodeTest/sphere.stl
+output_dir: outputs/minimal_simulation
+voxel_spacing: 0.5
+
+solver:
+  neighborhood: directional_von_neumann
+  current_coefficients: [0.2, 0.2, 0.2, 0.2]
+  lower_coefficients: 1.0
+  residual_criteria: [0.00001, 0.0001, 0.0001, 0.001]
+  overwrap_criterion: 0.1
+  iteration_bound: 100
+  min_bias: 0.05
+  stochastic_mode: in_layer
+  machine_bias: none
+  initial_deviation: 0.0
+  use_gpu: false
+  rng_seed: 1000
+

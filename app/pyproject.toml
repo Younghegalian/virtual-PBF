@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "virtual-pbf-workbench"
+version = "0.1.0"
+description = "Desktop virtual PBF simulation, calibration, and machine-map research workbench."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary research prototype" }
+authors = [
+  { name = "Virtual PBF contributors" }
+]
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "scikit-image>=0.22",
+  "pillow>=10.0",
+  "trimesh>=4.0",
+  "meshio>=5.3",
+  "imagecodecs>=2024.6",
+  "h5py>=3.10",
+  "pydantic>=2.6",
+  "PyYAML>=6.0",
+  "typing-extensions>=4.9"
+]
+
+[project.optional-dependencies]
+gui = [
+  "PySide6>=6.7",
+  "pyvista>=0.43",
+  "pyvistaqt>=0.11"
+]
+native = [
+  "cmake>=4.0",
+  "ninja>=1.13",
+  "pybind11>=3.0",
+  "scikit-build-core>=0.12"
+]
+gpu = [
+  "cupy-cuda12x>=14.0",
+  "nvidia-cuda-nvrtc-cu12>=12.9",
+  "nvidia-cuda-runtime-cu12>=12.9"
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "mypy>=1.10"
+]
+
+[project.scripts]
+virtual-pbf = "capp.cli:main"
+virtual-pbf-workbench = "capp.workbench.main:main"
+
+[project.gui-scripts]
+virtual-pbf-workbench-gui = "capp.workbench.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/capp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--basetemp=.pytest_tmp"
+

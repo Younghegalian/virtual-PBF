@@ -1,0 +1,9 @@
+app/.venv/
+app/.pytest_cache/
+app/.pytest_tmp/
+app/.ruff_cache/
+app/.cupy_cache/
+app/.git.bak*/
+**/__pycache__/
+*.py[cod]
+.replay_after_full.patch
