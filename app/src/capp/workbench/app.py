@@ -327,6 +327,7 @@ class WorkbenchMainWindow:
         self._last_result = None
         self._last_result_config = None
         self._last_voxel_grid = None
+        self._last_voxel_preview_data = None
         self._last_voxel_signature = None
         self._loaded_result = None
         self._busy = False
@@ -964,7 +965,8 @@ class WorkbenchMainWindow:
         right_layout.setSpacing(3)
         from capp.workbench.preview import PreviewPane
 
-        self._preview = PreviewPane(show_stl_controls=True)
+        self._preview = PreviewPane(show_source_selector=True, show_stl_controls=True)
+        self._preview.source_selector.currentTextChanged.connect(self._preview_source_changed)
         self._preview.stl_display_mode.currentTextChanged.connect(self._refresh_stl_preview_style)
         self._preview.overhang_limit.editingFinished.connect(self._refresh_stl_preview_style)
         right_layout.addWidget(self._preview.widget, 1)
@@ -998,6 +1000,8 @@ class WorkbenchMainWindow:
 
         self._on_part_type_changed(self._part_type.currentText())
         self._set_parameter_defaults(self._neighborhood.currentText())
+        self._update_preview_source_controls("STL")
+        self._update_preview_source_availability()
         return panel
 
     def _build_results_page(self):
@@ -1558,6 +1562,99 @@ class WorkbenchMainWindow:
             return legacy
         return path
 
+    def _preview_source_changed(self, source: str) -> None:
+        self._render_preview_source(source)
+
+    def _set_preview_source(self, source: str) -> None:
+        if not hasattr(self, "_preview"):
+            return
+        selector = self._preview.source_selector
+        selector.blockSignals(True)
+        selector.setCurrentText(source)
+        selector.blockSignals(False)
+        self._update_preview_source_controls(source)
+        self._update_preview_source_availability()
+
+    def _update_preview_source_controls(self, source: str | None = None) -> None:
+        if not hasattr(self, "_preview"):
+            return
+        source = source or self._preview.source_selector.currentText()
+        self._preview.set_stl_controls_visible(source == "STL")
+        self._preview.set_volume_controls_visible(source in {"Voxelization", "Result"})
+
+    def _update_preview_source_availability(self) -> None:
+        if not hasattr(self, "_preview"):
+            return
+        selector = self._preview.source_selector
+        has_stl = self._last_stl_preview is not None or bool(self._part_geometry.text().strip())
+        available = {
+            "STL": has_stl,
+            "Voxelization": self._last_voxel_grid is not None,
+            "Result": self._last_result is not None,
+        }
+        model = selector.model()
+        for index in range(selector.count()):
+            item = model.item(index)
+            if item is not None:
+                item.setEnabled(available.get(selector.itemText(index), False))
+
+    def _render_preview_source(self, source: str | None = None) -> None:
+        if not hasattr(self, "_preview"):
+            return
+        source = source or self._preview.source_selector.currentText()
+        self._update_preview_source_controls(source)
+        self._update_preview_source_availability()
+        if source == "STL":
+            self._show_stl_preview_from_cache()
+        elif source == "Voxelization":
+            self._show_voxelization_preview_from_cache()
+        elif source == "Result":
+            self._show_result_preview_from_cache()
+
+    def _show_stl_preview_from_cache(self) -> None:
+        if self._last_stl_preview is not None:
+            path, mesh, original_cells = self._last_stl_preview
+            mode, overhang_limit = self._stl_preview_display_settings()
+            self._preview.show_stl_mesh(
+                path,
+                mesh,
+                original_cells,
+                display_mode=mode,
+                overhang_limit=overhang_limit,
+            )
+            return
+
+        path = self._part_geometry.text().strip()
+        if path and Path(path).exists():
+            self._preview_part_geometry()
+        else:
+            self._preview.show_message("Open an STL to preview geometry.")
+
+    def _show_voxelization_preview_from_cache(self) -> None:
+        if self._last_voxel_grid is None:
+            self._preview.show_message("Voxelize geometry to preview voxelization.")
+            return
+        volume = self._last_voxel_preview_data
+        if volume is None:
+            volume = self._last_voxel_grid.data
+        self._preview.show_voxels(
+            volume,
+            spacing=self._last_voxel_grid.spacing,
+            origin=self._last_voxel_grid.origin,
+            label="Voxelization",
+        )
+
+    def _show_result_preview_from_cache(self) -> None:
+        if self._last_result is None:
+            self._preview.show_message("Run virtual printing to preview result.")
+            return
+        self._preview.show_voxels(
+            self._last_result.binary,
+            spacing=self._last_result.spacing,
+            origin=self._last_result.origin,
+            label="Result",
+        )
+
     def _preview_part_geometry(self) -> None:
         path = self._part_geometry.text().strip()
         if not path:
@@ -1566,6 +1663,7 @@ class WorkbenchMainWindow:
             self._append_log(f"STL preview skipped: file not found ({path})")
             return
         self._last_stl_preview = None
+        self._set_preview_source("STL")
         self._append_log(f"Preparing STL preview: {path}")
         self._preview.show_message("Loading STL preview...")
         worker = _StlPreviewWorker(path)
@@ -1585,15 +1683,9 @@ class WorkbenchMainWindow:
     def _refresh_stl_preview_style(self) -> None:
         if self._last_stl_preview is None or not hasattr(self, "_preview"):
             return
-        path, mesh, original_cells = self._last_stl_preview
-        mode, overhang_limit = self._stl_preview_display_settings()
-        self._preview.show_stl_mesh(
-            path,
-            mesh,
-            original_cells,
-            display_mode=mode,
-            overhang_limit=overhang_limit,
-        )
+        self._set_preview_source("STL")
+        mode = self._preview.stl_display_mode.currentText()
+        self._show_stl_preview_from_cache()
         self._append_log(f"STL display mode: {mode}")
 
     def _stl_preview_finished(
@@ -1609,14 +1701,8 @@ class WorkbenchMainWindow:
             self._append_log("STL preview discarded because the selected geometry changed.")
             return
         self._last_stl_preview = (path, mesh, original_cells)
-        mode, overhang_limit = self._stl_preview_display_settings()
-        self._preview.show_stl_mesh(
-            path,
-            mesh,
-            original_cells,
-            display_mode=mode,
-            overhang_limit=overhang_limit,
-        )
+        self._set_preview_source("STL")
+        self._show_stl_preview_from_cache()
         self._append_log(
             f"STL preview ready: {Path(path).name}, cells={mesh.n_cells}/{original_cells}, "
             f"{elapsed_seconds:.2f} s"
@@ -1629,18 +1715,15 @@ class WorkbenchMainWindow:
             return
         self._append_log(f"STL preview failed: {message}")
         self._preview.show_message(f"STL preview failed: {message}")
+        self._update_preview_source_availability()
 
     def _preview_result(self) -> None:
         if self._last_result is None:
             self._QMessageBox.warning(self._window, "Missing result", "Run a simulation first.")
             return
-        self._append_log("Previewing binary voxel result.")
-        self._preview.show_voxels(
-            self._last_result.binary,
-            spacing=self._last_result.spacing,
-            origin=self._last_result.origin,
-            label="Binary",
-        )
+        self._set_preview_source("Result")
+        self._append_log("Previewing virtual printing result.")
+        self._show_result_preview_from_cache()
 
     def _voxelize_geometry(self) -> None:
         if self._busy:
@@ -1672,22 +1755,21 @@ class WorkbenchMainWindow:
             is_stale = True
         if is_stale:
             self._last_voxel_grid = None
+            self._last_voxel_preview_data = None
             self._last_voxel_signature = None
             self._voxel_status_label.setText("Required")
             self._set_busy(False, "Voxelization discarded")
+            self._update_preview_source_availability()
             self._append_log(
                 "Voxelization finished, but geometry or spacing changed. Run voxelization again."
             )
             return
 
         self._last_voxel_grid = grid
+        self._last_voxel_preview_data = display_data
         self._last_voxel_signature = self._voxel_signature(config)
-        self._preview.show_voxels(
-            display_data,
-            spacing=grid.spacing,
-            origin=grid.origin,
-            label="Voxelization",
-        )
+        self._set_preview_source("Voxelization")
+        self._show_voxelization_preview_from_cache()
         self._voxel_status_label.setText(
             f"{grid.shape[0]} x {grid.shape[1]} x {grid.shape[2]}, {grid.filled_count} voxels"
         )
@@ -1700,9 +1782,11 @@ class WorkbenchMainWindow:
     def _voxelization_failed(self, _config, message: str) -> None:
         self._voxelization_worker = None
         self._last_voxel_grid = None
+        self._last_voxel_preview_data = None
         self._last_voxel_signature = None
         self._voxel_status_label.setText("Required")
         self._set_busy(False, "Voxelization failed")
+        self._update_preview_source_availability()
         self._append_log(f"Voxelization failed: {message}")
         self._QMessageBox.critical(self._window, "Voxelization failed", message)
 
@@ -2589,7 +2673,7 @@ class WorkbenchMainWindow:
             self._preview_loaded_result()
             self._append_log("Complete")
             self._append_log(f"Out-of-CAD voxels: {outside_voxels}")
-            self._navigation.setCurrentRow(2)
+            self._navigation.setCurrentRow(1)
         except Exception as exc:
             self._simulation_failed(config, str(exc))
             return
@@ -2724,11 +2808,14 @@ class WorkbenchMainWindow:
 
     def _invalidate_voxelization(self, *_args) -> None:
         if self._last_voxel_grid is None:
+            self._update_preview_source_availability()
             return
         self._last_voxel_grid = None
+        self._last_voxel_preview_data = None
         self._last_voxel_signature = None
         self._run_button.setEnabled(False)
         self._voxel_status_label.setText("Required")
+        self._update_preview_source_availability()
         self._append_log("Voxelization cleared. Run voxelization again before simulation.")
 
     def _voxel_signature(self, config) -> tuple[str, float]:

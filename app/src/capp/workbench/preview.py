@@ -182,6 +182,9 @@ class PreviewPane:
         self.stl_display_mode.setVisible(visible)
         self.overhang_limit.setVisible(visible)
 
+    def set_volume_controls_visible(self, visible: bool) -> None:
+        self._render_mode.setVisible(visible)
+
     def show_voxels(
         self,
         volume: NDArray,
