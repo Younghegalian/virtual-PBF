@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+
+from capp.compute.cuda_env import ensure_cupy_cache_dir
 from capp.compute.devices import solver_backend_statuses, validate_solver_backend
 from capp.domain import SolverBackend, SolverParameters
 
@@ -14,3 +18,21 @@ def test_cpu_reference_backend_is_always_available():
 
     assert statuses[SolverBackend.CPU_REFERENCE].available is True
     assert validate_solver_backend(SolverBackend.CPU_REFERENCE).available is True
+
+
+def test_cupy_environment_prefers_bundled_runtime(monkeypatch):
+    monkeypatch.setenv("CUDA_PATH", r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2")
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+
+    ensure_cupy_cache_dir()
+
+    expected = (
+        Path(__file__).resolve().parents[1]
+        / ".venv"
+        / "Lib"
+        / "site-packages"
+        / "nvidia"
+        / "cuda_runtime"
+    )
+    assert Path(os.environ["CUDA_PATH"]) == expected
+    assert Path(os.environ["CUDA_HOME"]) == expected

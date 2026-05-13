@@ -15,7 +15,9 @@ def ensure_cupy_cache_dir() -> Path:
     runtime_root = nvidia_root / "cuda_runtime"
     nvrtc_root = nvidia_root / "cuda_nvrtc"
     if runtime_root.exists():
-        os.environ.setdefault("CUDA_PATH", str(runtime_root))
+        runtime_path = str(runtime_root)
+        os.environ["CUDA_PATH"] = runtime_path
+        os.environ["CUDA_HOME"] = runtime_path
     for dll_dir in (runtime_root / "bin", nvrtc_root / "bin"):
         if dll_dir.exists():
             with suppress(AttributeError, OSError):
