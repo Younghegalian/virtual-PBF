@@ -165,6 +165,7 @@ class _ModelCalibrationWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
+            self.signals.progress.emit(0, "Starting Model Calibration worker")
             from capp.calibration.model_calibration import (
                 ModelCalibrationOptions,
                 run_model_calibration_from_paths,
@@ -2247,7 +2248,11 @@ class WorkbenchMainWindow:
         self._calibration_progress_bar.setValue(0)
         self._calibration_progress_bar.setFormat("0%")
         self._calibration_progress_message.setText("Starting Model Calibration")
+        self._set_model_calibration_progress(0, "Starting Model Calibration worker")
         self._set_busy(True, "Running Model Calibration...", task="model_calibration")
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
         worker = _ModelCalibrationWorker(
             str(geometry_path),
             str(sample_dir),
@@ -2264,6 +2269,11 @@ class WorkbenchMainWindow:
         worker.signals.failed.connect(self._model_calibration_failed)
         self._model_calibration_worker = worker
         self._thread_pool.start(worker)
+        self._append_log(
+            "Model Calibration worker queued "
+            f"(active {self._thread_pool.activeThreadCount()}/"
+            f"{self._thread_pool.maxThreadCount()})"
+        )
 
     def _model_calibration_sample_filter(self) -> set[str] | None:
         text = self._calibration_sample_filter.text().strip()
