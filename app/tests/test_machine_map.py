@@ -14,6 +14,7 @@ from capp.machine_map import (
     generate_machine_parameter_map_from_files,
     read_model_calibration_weights_csv,
     read_sample_coordinates_xlsx,
+    save_machine_parameter_map_outputs,
 )
 
 
@@ -139,6 +140,67 @@ def test_generate_machine_parameter_map_from_files_writes_solver_ready_outputs(t
     assert "virtual_pbf.machine_parameter_map.v1" in result.metadata_json.read_text(
         encoding="utf-8"
     )
+
+
+def test_machine_parameter_map_duplicate_preset_names_use_new_folder(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    coordinates = tmp_path / "sp_coordinates.xlsx"
+    output_dir = tmp_path / "map"
+    _write_minimal_weights_csv(weights)
+    _write_minimal_coordinates_xlsx(coordinates)
+
+    first = generate_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates,
+        output_dir=output_dir,
+        resolution=9,
+        preset_name="Machine Map",
+    )
+    second = generate_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates,
+        output_dir=output_dir,
+        resolution=9,
+        preset_name="Machine Map",
+    )
+
+    assert first.output_dir.name == "Machine_Map"
+    assert second.output_dir.name == "Machine_Map_002"
+    assert first.preset_name == "Machine Map"
+    assert second.preset_name == "Machine Map 002"
+    assert second.map_npz.exists()
+
+
+def test_save_machine_parameter_map_outputs_keeps_configuration_and_inputs(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    coordinates_path = tmp_path / "sp_coordinates.xlsx"
+    _write_minimal_weights_csv(weights)
+    _write_minimal_coordinates_xlsx(coordinates_path)
+    built = build_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates_path,
+        resolution=9,
+        preset_name="Preset A",
+    )
+
+    saved = save_machine_parameter_map_outputs(
+        output_dir=tmp_path / "map",
+        model=built.model,
+        grid=built.grid,
+        parameters=built.parameters,
+        coordinates=built.coordinates,
+        resolution=built.resolution,
+        preset_name=built.preset_name,
+        weights_csv=weights,
+        coordinates_xlsx=coordinates_path,
+        run_configuration={"format": "test.config", "preset": "Preset A"},
+    )
+
+    assert saved.configuration_json is not None
+    assert saved.configuration_json.exists()
+    assert '"format": "test.config"' in saved.configuration_json.read_text(encoding="utf-8")
+    assert (saved.output_dir / "inputs" / weights.name).exists()
+    assert (saved.output_dir / "inputs" / coordinates_path.name).exists()
 
 
 def _write_minimal_weights_csv(path: Path) -> None:

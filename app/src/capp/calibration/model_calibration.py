@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,7 +33,12 @@ from capp.simulation.pipeline import SimulationPipeline
 from capp.solver.factory import create_solver
 
 ProgressCallback = Callable[[int, str], None]
-MODEL_CALIBRATION_OPTIMIZERS = ("adaptive_sobol", "sobol", "latin_hypercube")
+MODEL_CALIBRATION_OPTIMIZERS = (
+    "global_evolution",
+    "adaptive_sobol",
+    "sobol",
+    "latin_hypercube",
+)
 _SOLVER_LABELS = {
     SolverBackend.CPU_REFERENCE: "PBF Standard",
     SolverBackend.CPU_NATIVE: "PBF Direct",
@@ -125,7 +131,7 @@ class ModelCalibrationOptions:
     bounds: ModelCalibrationBounds = ModelCalibrationBounds()
     boundary_radius: int = 15
     max_workers: int = 1
-    optimizer: str = "adaptive_sobol"
+    optimizer: str = "global_evolution"
     save_research_artifacts: bool = False
 
     def __post_init__(self) -> None:
@@ -134,7 +140,7 @@ class ModelCalibrationOptions:
         if self.max_workers < 1:
             raise ValueError("max_workers must be at least 1.")
         object.__setattr__(self, "backend", SolverBackend(self.backend))
-        optimizer = self.optimizer.strip().lower().replace("-", "_")
+        optimizer = self.optimizer.strip().lower().replace("-", "_").replace(" ", "_")
         if optimizer not in MODEL_CALIBRATION_OPTIMIZERS:
             choices = ", ".join(MODEL_CALIBRATION_OPTIMIZERS)
             raise ValueError(f"optimizer must be one of: {choices}.")
@@ -541,6 +547,7 @@ def save_model_calibration_outputs(
     save_research_artifacts: bool = False,
     include_volume_arrays: bool = False,
     calibration_geometry_path: str | Path | None = None,
+    run_configuration: dict[str, object] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     folder = Path(output_dir)
@@ -645,6 +652,11 @@ def save_model_calibration_outputs(
             folder / f"{sample.sample}_model_calibration_artifacts.npz",
             **artifact_payload,
         )
+    if run_configuration is not None:
+        config_path = folder / "run_configuration.json"
+        if progress_callback is not None:
+            progress_callback(100, f"Writing {config_path.name}")
+        config_path.write_text(json.dumps(run_configuration, indent=2), encoding="utf-8")
     if save_research_artifacts:
         export_model_calibration_research_artifacts(
             folder,
@@ -782,11 +794,12 @@ def _safe_sample_name(sample: str) -> str:
 
 
 def _candidate_sequence(options: ModelCalibrationOptions) -> list[ModelCalibrationParameterSet]:
-    count = (
-        _adaptive_initial_count(options)
-        if options.optimizer == "adaptive_sobol"
-        else options.max_evaluations
-    )
+    if options.optimizer == "adaptive_sobol":
+        count = _adaptive_initial_count(options)
+    elif options.optimizer == "global_evolution":
+        count = _evolution_initial_count(options)
+    else:
+        count = options.max_evaluations
     return _global_candidate_sequence(options, count)
 
 
@@ -794,6 +807,12 @@ def _adaptive_initial_count(options: ModelCalibrationOptions) -> int:
     if options.max_evaluations <= 8:
         return options.max_evaluations
     return min(options.max_evaluations, max(8, int(np.ceil(options.max_evaluations * 0.5))))
+
+
+def _evolution_initial_count(options: ModelCalibrationOptions) -> int:
+    if options.max_evaluations <= 8:
+        return options.max_evaluations
+    return min(options.max_evaluations, max(8, int(np.ceil(options.max_evaluations * 0.40))))
 
 
 def _global_candidate_sequence(
@@ -820,6 +839,81 @@ def _global_candidate_sequence(
 
 def _candidate_key(candidate: ModelCalibrationParameterSet) -> tuple[float, ...]:
     return tuple(round(value, 8) for value in candidate.as_tuple())
+
+
+def _candidate_loss(evaluations: list[ModelCalibrationEvaluation]) -> float:
+    losses = [evaluation.loss.total for evaluation in evaluations if np.isfinite(evaluation.loss.total)]
+    if not losses:
+        return float("inf")
+    return float(np.mean(losses))
+
+
+def _evolution_candidate_batch(
+    options: ModelCalibrationOptions,
+    population: list[tuple[ModelCalibrationParameterSet, float]],
+    *,
+    seen: set[tuple[float, ...]],
+    remaining: int,
+    round_index: int,
+) -> list[ModelCalibrationParameterSet]:
+    bounds = np.asarray(options.bounds.as_pairs(), dtype=np.float64)
+    lower = bounds[:, 0]
+    upper = bounds[:, 1]
+    span = upper - lower
+    ranked = sorted(
+        ((candidate, score) for candidate, score in population if np.isfinite(score)),
+        key=lambda item: item[1],
+    )
+    if len(ranked) < 4:
+        ranked = sorted(population, key=lambda item: item[1])
+    arrays = np.asarray([candidate.as_tuple() for candidate, _score in ranked], dtype=np.float64)
+    rng = np.random.default_rng(_offset_seed(options.rng_seed, 30_000 + round_index))
+    candidates: list[ModelCalibrationParameterSet] = []
+
+    def add_candidate(values: NDArray[np.float64]) -> None:
+        if len(candidates) >= remaining:
+            return
+        values = np.clip(values, lower, upper)
+        candidate = ModelCalibrationParameterSet.from_sequence(values)
+        key = _candidate_key(candidate)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(candidate)
+
+    population_size = int(arrays.shape[0])
+    if population_size >= 4:
+        elite_count = min(population_size, max(4, int(np.ceil(population_size * 0.35))))
+        attempts = 0
+        max_attempts = max(120, remaining * 80)
+        while len(candidates) < remaining and attempts < max_attempts:
+            attempts += 1
+            if attempts % 5 == 0:
+                add_candidate(lower + rng.random(6) * span)
+                continue
+
+            target = arrays[int(rng.integers(population_size))]
+            best = arrays[0]
+            force = float(rng.uniform(0.45, 0.95))
+            crossover = float(rng.uniform(0.35, 0.9))
+            if rng.random() < 0.55:
+                idx_a, idx_b = rng.choice(population_size, size=2, replace=False)
+                mutant = target + force * (best - target) + force * (arrays[idx_a] - arrays[idx_b])
+            else:
+                base = arrays[int(rng.integers(elite_count))]
+                idx_a, idx_b = rng.choice(population_size, size=2, replace=False)
+                mutant = base + force * (arrays[idx_a] - arrays[idx_b])
+
+            mask = rng.random(6) < crossover
+            mask[int(rng.integers(6))] = True
+            trial = np.where(mask, mutant, target)
+            add_candidate(trial)
+
+    fallback_attempt = 0
+    while len(candidates) < remaining and fallback_attempt < max(remaining * 20, 60):
+        fallback_attempt += 1
+        add_candidate(lower + rng.random(6) * span)
+    return candidates
 
 
 def _adaptive_candidate_batch(
@@ -1003,6 +1097,7 @@ def _run_model_calibration_shared_candidates(
     seen_candidates = {_candidate_key(candidate) for candidate in candidates}
     best_by_sample: list[ModelCalibrationEvaluation | None] = [None] * len(targets)
     loss_seconds_by_sample = [0.0] * len(targets)
+    evaluated_population: list[tuple[ModelCalibrationParameterSet, float]] = []
     completed = 0
     running_progress_by_candidate: dict[int, float] = {}
     completed_lock = Lock()
@@ -1143,6 +1238,8 @@ def _run_model_calibration_shared_candidates(
         nonlocal total_solver_seconds, total_roi_seconds
         total_solver_seconds += solver_seconds
         total_roi_seconds += roi_seconds
+        if evaluations:
+            evaluated_population.append((evaluations[0].parameters, _candidate_loss(evaluations)))
         _merge_candidate_evaluations(evaluations, best_by_sample, loss_seconds_by_sample)
         best_loss = min(
             evaluation.loss.total for evaluation in best_by_sample if evaluation is not None
@@ -1217,6 +1314,28 @@ def _run_model_calibration_shared_candidates(
             "adaptive",
         )
         next_candidate_index += len(local_candidates)
+        round_index += 1
+
+    while options.optimizer == "global_evolution" and completed < options.max_evaluations:
+        remaining = options.max_evaluations - completed
+        batch_size = min(remaining, max(2, worker_count * 2))
+        evolution_candidates = _evolution_candidate_batch(
+            options,
+            evaluated_population,
+            seen=seen_candidates,
+            remaining=batch_size,
+            round_index=round_index,
+        )
+        if not evolution_candidates:
+            break
+        evaluate_batch(
+            [
+                (next_candidate_index + offset, candidate)
+                for offset, candidate in enumerate(evolution_candidates)
+            ],
+            "evolution",
+        )
+        next_candidate_index += len(evolution_candidates)
         round_index += 1
 
     elapsed_seconds = perf_counter() - started

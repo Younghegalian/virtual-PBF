@@ -28,8 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     calibrate.add_argument("--max-evaluations", default=24, type=int)
     calibrate.add_argument(
         "--optimizer",
-        default="adaptive_sobol",
-        choices=["adaptive_sobol", "sobol", "latin_hypercube"],
+        default="global_evolution",
+        choices=["global_evolution", "adaptive_sobol", "sobol", "latin_hypercube"],
         help="Model Calibration candidate search strategy.",
     )
     calibrate.add_argument(

@@ -337,11 +337,12 @@ class _SaveModelCalibrationWorkerSignals(QObject):
 
 
 class _SaveModelCalibrationWorker(QRunnable):
-    def __init__(self, output_dir: str, result, geometry_path: str) -> None:
+    def __init__(self, output_dir: str, result, geometry_path: str, run_configuration) -> None:
         super().__init__()
         self.output_dir = output_dir
         self.result = result
         self.geometry_path = geometry_path
+        self.run_configuration = run_configuration
         self.signals = _SaveModelCalibrationWorkerSignals()
 
     @Slot()
@@ -359,6 +360,7 @@ class _SaveModelCalibrationWorker(QRunnable):
                 self.output_dir,
                 self.result,
                 calibration_geometry_path=self.geometry_path,
+                run_configuration=self.run_configuration,
                 progress_callback=progress,
             )
             elapsed = perf_counter() - started
@@ -479,10 +481,11 @@ class _SaveMachineMapWorkerSignals(QObject):
 
 
 class _SaveMachineMapWorker(QRunnable):
-    def __init__(self, output_dir: str, result) -> None:
+    def __init__(self, output_dir: str, result, run_configuration) -> None:
         super().__init__()
         self.output_dir = output_dir
         self.result = result
+        self.run_configuration = run_configuration
         self.signals = _SaveMachineMapWorkerSignals()
 
     @Slot()
@@ -503,6 +506,7 @@ class _SaveMachineMapWorker(QRunnable):
                 coordinates_xlsx=self.result.coordinates_xlsx,
                 elapsed_seconds=self.result.elapsed_seconds,
                 voxel_spacing=self.result.voxel_spacing,
+                run_configuration=self.run_configuration,
             )
             self.signals.progress.emit(100, f"Machine parameter map saved: {saved.map_npz.name}")
         except Exception as exc:
@@ -514,7 +518,7 @@ class _SaveMachineMapWorker(QRunnable):
 
 class WorkbenchMainWindow:
     def __init__(self) -> None:
-        from PySide6.QtCore import QThreadPool, Qt
+        from PySide6.QtCore import QSettings, QThreadPool, Qt
         from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import (
             QFileDialog,
@@ -530,12 +534,13 @@ class WorkbenchMainWindow:
             QWidget,
         )
 
-        from capp.workbench.branding import APP_NAME, app_icon_path
+        from capp.workbench.branding import APP_NAME, APP_ORGANIZATION, app_icon_path
 
         self._window = QMainWindow()
         self._window.setWindowTitle(APP_NAME)
         self._window.setWindowIcon(QIcon(str(app_icon_path())))
         self._window.resize(1600, 960)
+        self._settings = QSettings(APP_ORGANIZATION, APP_NAME)
 
         self._QFileDialog = QFileDialog
         self._QMessageBox = QMessageBox
@@ -584,6 +589,7 @@ class WorkbenchMainWindow:
         self._machine_map_contour_data = None
         self._machine_map_contour_source_pixmap = None
         self._result_slice_source_image = None
+        self._preference_fields = {}
         self._thread_pool = QThreadPool.globalInstance()
         self._log = self._make_log()
 
@@ -592,8 +598,8 @@ class WorkbenchMainWindow:
         self._add_feature("simulation", "Virtual Printing", self._build_simulation_page())
         self._add_feature("results", "Result Display", self._build_results_page())
         self._add_feature("calibration", "Model Calibration", self._build_lab_page())
-        self._add_feature("data", "Data & Models", self._build_placeholder_page("Data & Models"))
-        self._add_feature("settings", "Preferences", self._build_placeholder_page("Preferences"))
+        self._add_feature("settings", "Preferences", self._build_preferences_page())
+        self._load_preferences()
 
         splitter = QSplitter(self._Qt.Orientation.Horizontal)
         splitter.setObjectName("MainSplitter")
@@ -929,8 +935,7 @@ class WorkbenchMainWindow:
             ("simulation", "Virtual Printing", 0),
             ("results", "Result Display", 1),
             ("calibration", "Model Calibration", 2),
-            ("data", "Data & Models", 3),
-            ("settings", "Preferences", 4),
+            ("settings", "Preferences", 3),
         ]
         for position, (icon_key, label, page_index) in enumerate(entries):
             button = QPushButton(label)
@@ -1448,6 +1453,7 @@ class WorkbenchMainWindow:
         solver_form = QFormLayout(solver_box)
         self._configure_form(solver_form)
         self._calibration_optimizer = QComboBox()
+        self._calibration_optimizer.addItem("Global Evolution", "global_evolution")
         self._calibration_optimizer.addItem("Adaptive Sobol", "adaptive_sobol")
         self._calibration_optimizer.addItem("Sobol", "sobol")
         self._calibration_optimizer.addItem("Latin Hypercube", "latin_hypercube")
@@ -1709,12 +1715,196 @@ class WorkbenchMainWindow:
         layout.addStretch(1)
         return panel
 
+    def _build_preferences_page(self):
+        from PySide6.QtWidgets import (
+            QComboBox,
+            QFormLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLineEdit,
+            QPushButton,
+            QScrollArea,
+            QSpinBox,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        panel = QWidget()
+        panel.setObjectName("Page")
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(3, 3, 3, 3)
+        outer.setSpacing(3)
+
+        shell = QWidget()
+        shell.setObjectName("ParameterPane")
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self._page_title("Preferences"))
+
+        content = QWidget()
+        content.setObjectName("ParameterContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(4)
+        content_layout.setAlignment(self._Qt.AlignmentFlag.AlignTop)
+
+        defaults = self._preference_defaults()
+
+        path_box = QGroupBox("Default Paths")
+        path_form = QFormLayout(path_box)
+        self._configure_form(path_form)
+
+        simulation_output = QLineEdit(defaults["simulation_output_dir"])
+        self._preference_fields["simulation_output_dir"] = simulation_output
+        path_form.addRow(
+            "Simulation output dir",
+            self._file_row(
+                simulation_output,
+                lambda: self._browse_preference_dir(
+                    simulation_output, "Select default simulation output directory"
+                ),
+            ),
+        )
+
+        calibration_output = QLineEdit(defaults["calibration_output_dir"])
+        self._preference_fields["calibration_output_dir"] = calibration_output
+        path_form.addRow(
+            "Calibration output dir",
+            self._file_row(
+                calibration_output,
+                lambda: self._browse_preference_dir(
+                    calibration_output, "Select default calibration output directory"
+                ),
+            ),
+        )
+
+        calibration_geometry = QLineEdit(defaults["calibration_geometry"])
+        self._preference_fields["calibration_geometry"] = calibration_geometry
+        path_form.addRow(
+            "Calibration STL",
+            self._file_row(
+                calibration_geometry,
+                lambda: self._browse_preference_file(
+                    calibration_geometry,
+                    "Select default calibration STL",
+                    "STL files (*.stl);;All files (*.*)",
+                ),
+            ),
+        )
+
+        calibration_sample_dir = QLineEdit(defaults["calibration_sample_dir"])
+        self._preference_fields["calibration_sample_dir"] = calibration_sample_dir
+        path_form.addRow(
+            "ROI sample folder",
+            self._file_row(
+                calibration_sample_dir,
+                lambda: self._browse_preference_dir(
+                    calibration_sample_dir, "Select default ROI sample folder"
+                ),
+            ),
+        )
+
+        machine_coordinate_workbook = QLineEdit(defaults["machine_coordinate_workbook"])
+        self._preference_fields["machine_coordinate_workbook"] = machine_coordinate_workbook
+        path_form.addRow(
+            "SP coordinates",
+            self._file_row(
+                machine_coordinate_workbook,
+                lambda: self._browse_preference_file(
+                    machine_coordinate_workbook,
+                    "Select default SP coordinate workbook",
+                    "Excel workbooks (*.xlsx);;All files (*.*)",
+                ),
+            ),
+        )
+
+        machine_map_path = QLineEdit(defaults["machine_map_path"])
+        self._preference_fields["machine_map_path"] = machine_map_path
+        path_form.addRow(
+            "Machine map",
+            self._file_row(
+                machine_map_path,
+                lambda: self._browse_preference_file(
+                    machine_map_path,
+                    "Select default machine parameter map",
+                    "Machine parameter maps (*.npz);;All files (*.*)",
+                ),
+            ),
+        )
+        content_layout.addWidget(path_box)
+
+        calibration_box = QGroupBox("Model Calibration Defaults")
+        calibration_form = QFormLayout(calibration_box)
+        self._configure_form(calibration_form)
+
+        optimizer = QComboBox()
+        optimizer.addItem("Global Evolution", "global_evolution")
+        optimizer.addItem("Adaptive Sobol", "adaptive_sobol")
+        optimizer.addItem("Sobol", "sobol")
+        optimizer.addItem("Latin Hypercube", "latin_hypercube")
+        self._preference_fields["calibration_optimizer"] = optimizer
+        calibration_form.addRow("Search method", optimizer)
+
+        spacing = QLineEdit(defaults["calibration_spacing"])
+        self._preference_fields["calibration_spacing"] = spacing
+        calibration_form.addRow("Grid spacing (mm)", spacing)
+
+        evaluations = QSpinBox()
+        evaluations.setRange(1, 10000)
+        evaluations.setValue(int(defaults["calibration_evaluations"]))
+        self._preference_fields["calibration_evaluations"] = evaluations
+        calibration_form.addRow("Evaluations", evaluations)
+
+        parallel = QSpinBox()
+        parallel.setRange(1, 128)
+        parallel.setValue(int(defaults["calibration_parallel_samples"]))
+        self._preference_fields["calibration_parallel_samples"] = parallel
+        calibration_form.addRow("Parallel samples", parallel)
+        content_layout.addWidget(calibration_box)
+
+        map_box = QGroupBox("Machine Map Defaults")
+        map_form = QFormLayout(map_box)
+        self._configure_form(map_form)
+        machine_map_name = QLineEdit(defaults["machine_map_name"])
+        self._preference_fields["machine_map_name"] = machine_map_name
+        map_form.addRow("Preset name", machine_map_name)
+        content_layout.addWidget(map_box)
+        content_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("ParameterScroll")
+        scroll.viewport().setObjectName("ParameterViewport")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(self._Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(content)
+        shell_layout.addWidget(scroll, 1)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(4, 4, 4, 4)
+        action_row.setSpacing(4)
+        apply_button = QPushButton("Apply to Current Forms")
+        apply_button.clicked.connect(self._apply_preferences_from_page)
+        action_row.addWidget(apply_button)
+        save_button = QPushButton("Save Preferences")
+        save_button.setObjectName("PrimaryButton")
+        save_button.clicked.connect(self._save_preferences_from_page)
+        action_row.addWidget(save_button)
+        reset_button = QPushButton("Reset Defaults")
+        reset_button.clicked.connect(self._reset_preferences)
+        action_row.addWidget(reset_button)
+        shell_layout.addLayout(action_row)
+
+        outer.addWidget(shell, 1)
+        return panel
+
     def _file_row(self, line_edit, callback):
         from PySide6.QtWidgets import QHBoxLayout, QPushButton
 
         button = QPushButton("Open")
         button.setIcon(self._icons["open"])
         button.clicked.connect(callback)
+        line_edit._browse_button = button
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -1722,6 +1912,170 @@ class WorkbenchMainWindow:
         row.addWidget(line_edit)
         row.addWidget(button)
         return row
+
+    def _preference_defaults(self) -> dict[str, str]:
+        return {
+            "simulation_output_dir": "examples/outputs/gui_simulation",
+            "calibration_output_dir": "examples/outputs/model_calibration",
+            "calibration_geometry": str(self._default_calibration_geometry_path()),
+            "calibration_sample_dir": str(self._default_calibration_sample_dir()),
+            "calibration_spacing": "0.07",
+            "calibration_evaluations": "40",
+            "calibration_parallel_samples": str(self._recommended_parallel_samples()),
+            "calibration_optimizer": "global_evolution",
+            "machine_coordinate_workbook": str(self._default_machine_coordinate_path()),
+            "machine_map_path": str(self._default_machine_map_path()),
+            "machine_map_name": "Machine Map",
+        }
+
+    def _preference_key(self, key: str) -> str:
+        return f"preferences/{key}"
+
+    def _preference_values_from_settings(self) -> dict[str, str]:
+        defaults = self._preference_defaults()
+        values = {}
+        for key, default in defaults.items():
+            value = self._settings.value(self._preference_key(key), default)
+            values[key] = default if value is None else str(value)
+        return values
+
+    def _preference_widget_value(self, widget) -> str:
+        if hasattr(widget, "currentData"):
+            value = widget.currentData()
+            return "" if value is None else str(value)
+        if hasattr(widget, "value"):
+            return str(widget.value())
+        if hasattr(widget, "text"):
+            return widget.text().strip()
+        return ""
+
+    def _preferences_from_widgets(self) -> dict[str, str]:
+        return {
+            key: self._preference_widget_value(widget)
+            for key, widget in self._preference_fields.items()
+        }
+
+    def _set_combo_by_data(self, combo, value: str) -> bool:
+        index = combo.findData(value)
+        if index < 0:
+            return False
+        combo.setCurrentIndex(index)
+        return True
+
+    def _set_preference_widget_value(self, widget, value: str) -> None:
+        if hasattr(widget, "findData") and hasattr(widget, "setCurrentIndex"):
+            if not self._set_combo_by_data(widget, value):
+                index = widget.findText(value)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+            return
+        if hasattr(widget, "setValue"):
+            try:
+                widget.setValue(int(float(value)))
+            except ValueError:
+                return
+            return
+        if hasattr(widget, "setText"):
+            widget.setText(value)
+
+    def _set_preference_widgets(self, values: dict[str, str]) -> None:
+        for key, value in values.items():
+            widget = self._preference_fields.get(key)
+            if widget is not None:
+                self._set_preference_widget_value(widget, value)
+
+    def _load_preferences(self) -> None:
+        values = self._preference_values_from_settings()
+        self._set_preference_widgets(values)
+        self._apply_preferences_to_forms(values)
+
+    def _apply_preferences_from_page(self) -> None:
+        values = self._preferences_from_widgets()
+        self._apply_preferences_to_forms(values)
+        self._append_log("Preferences applied to current forms.")
+
+    def _save_preferences_from_page(self) -> None:
+        values = self._preferences_from_widgets()
+        for key, value in values.items():
+            self._settings.setValue(self._preference_key(key), value)
+        self._settings.sync()
+        self._apply_preferences_to_forms(values)
+        self._append_log("Preferences saved.")
+
+    def _reset_preferences(self) -> None:
+        values = self._preference_defaults()
+        for key in values:
+            self._settings.remove(self._preference_key(key))
+        self._settings.sync()
+        self._set_preference_widgets(values)
+        self._apply_preferences_to_forms(values)
+        self._append_log("Preferences reset to defaults.")
+
+    def _set_line_edit_if_present(self, attribute: str, value: str) -> None:
+        widget = getattr(self, attribute, None)
+        if widget is not None:
+            widget.setText(value)
+
+    def _set_spin_box_if_present(self, attribute: str, value: str) -> None:
+        widget = getattr(self, attribute, None)
+        if widget is None:
+            return
+        try:
+            widget.setValue(int(float(value)))
+        except ValueError:
+            return
+
+    def _apply_preferences_to_forms(self, values: dict[str, str]) -> None:
+        self._set_line_edit_if_present("_output_dir", values.get("simulation_output_dir", ""))
+        self._set_line_edit_if_present(
+            "_calibration_output_dir", values.get("calibration_output_dir", "")
+        )
+        self._set_line_edit_if_present(
+            "_calibration_geometry", values.get("calibration_geometry", "")
+        )
+        self._set_line_edit_if_present(
+            "_calibration_sample_dir", values.get("calibration_sample_dir", "")
+        )
+        self._set_line_edit_if_present(
+            "_calibration_spacing", values.get("calibration_spacing", "")
+        )
+        self._set_line_edit_if_present(
+            "_machine_map_coordinates", values.get("machine_coordinate_workbook", "")
+        )
+        self._set_line_edit_if_present("_machine_map_path", values.get("machine_map_path", ""))
+        self._set_line_edit_if_present("_machine_map_name", values.get("machine_map_name", ""))
+
+        if hasattr(self, "_calibration_optimizer"):
+            self._set_combo_by_data(
+                self._calibration_optimizer,
+                values.get("calibration_optimizer", "global_evolution"),
+            )
+        self._set_spin_box_if_present(
+            "_calibration_max_evaluations", values.get("calibration_evaluations", "40")
+        )
+        self._set_spin_box_if_present(
+            "_calibration_parallel_samples",
+            values.get("calibration_parallel_samples", str(self._recommended_parallel_samples())),
+        )
+        if hasattr(self, "_refresh_machine_map_name"):
+            self._refresh_machine_map_name()
+        if hasattr(self, "_update_machine_preset_controls"):
+            self._update_machine_preset_controls()
+
+    def _browse_preference_dir(self, line_edit, title: str) -> None:
+        path = self._QFileDialog.getExistingDirectory(self._window, title, line_edit.text())
+        if path:
+            line_edit.setText(path)
+
+    def _browse_preference_file(self, line_edit, title: str, filter_text: str) -> None:
+        path, _ = self._QFileDialog.getOpenFileName(
+            self._window,
+            title,
+            line_edit.text() or str(Path.cwd()),
+            filter_text,
+        )
+        if path:
+            line_edit.setText(path)
 
     def _make_log(self):
         from PySide6.QtWidgets import QPlainTextEdit
@@ -1815,16 +2169,30 @@ class WorkbenchMainWindow:
             self._append_log(f"Machine parameter map selected: {path}")
 
     def _update_machine_map_coordinate_fields(self) -> None:
-        coordinate_mode = self._machine_map_coordinate_mode.currentText()
-        center_mode = coordinate_mode == "Part center"
-        bounds_mode = coordinate_mode == "Explicit bounds"
+        machine_map_active = (
+            hasattr(self, "_machine_preset")
+            and self._machine_preset.currentText() == "Machine Map"
+        )
+        if hasattr(self, "_machine_map_coordinate_mode"):
+            self._machine_map_coordinate_mode.setEnabled(machine_map_active)
+        coordinate_mode = (
+            self._machine_map_coordinate_mode.currentText()
+            if machine_map_active
+            else ""
+        )
+        center_mode = machine_map_active and coordinate_mode == "Part center"
+        bounds_mode = machine_map_active and coordinate_mode == "Explicit bounds"
         for widget in self._machine_map_center_widgets:
             widget.setEnabled(center_mode)
         for widget in self._machine_map_bounds_widgets:
             widget.setEnabled(bounds_mode)
 
     def _refresh_machine_map_name(self) -> None:
-        path = Path(self._machine_map_path.text().strip())
+        text = self._machine_map_path.text().strip()
+        if not text:
+            self._machine_map_preset_name.setText("-")
+            return
+        path = Path(text)
         if not path.exists():
             self._machine_map_preset_name.setText("-")
             return
@@ -1856,8 +2224,12 @@ class WorkbenchMainWindow:
             self._iteration_bound.setText("400")
             self._overwrap.setText("0.1")
             self._refresh_machine_map_name()
+        else:
+            self._machine_map_preset_name.setText("-")
 
         self._apply_machine_preset_lock_state(machine_map_active)
+        self._apply_machine_map_input_state(machine_map_active)
+        self._update_machine_map_coordinate_fields()
 
     def _apply_machine_map_spacing(self, voxel_spacing: float | None) -> None:
         if voxel_spacing is None:
@@ -1878,6 +2250,15 @@ class WorkbenchMainWindow:
             return
         for widget in self._machine_preset_locked_widgets:
             widget.setEnabled(False)
+
+    def _apply_machine_map_input_state(self, machine_map_active: bool) -> None:
+        if not hasattr(self, "_machine_map_path"):
+            return
+        self._machine_map_path.setEnabled(machine_map_active)
+        browse_button = getattr(self._machine_map_path, "_browse_button", None)
+        if browse_button is not None:
+            browse_button.setEnabled(machine_map_active)
+        self._machine_map_preset_name.setEnabled(machine_map_active)
 
     def _default_machine_coordinate_path(self) -> Path:
         project_root = Path(__file__).resolve().parents[4]
@@ -2248,7 +2629,13 @@ class WorkbenchMainWindow:
     def _fit_result_slice_pixmap(self) -> None:
         if self._result_slice_source_image is None or not hasattr(self, "_slice_label"):
             return
-        self._slice_label.setPixmap(self._array_to_pixmap(self._result_slice_source_image))
+        colorize = (
+            hasattr(self, "_result_volume_choice")
+            and self._result_volume_choice.currentText() == "Probability"
+        )
+        self._slice_label.setPixmap(
+            self._array_to_pixmap(self._result_slice_source_image, colorize=colorize)
+        )
 
     def _selected_result_volume(self):
         if self._loaded_result is None:
@@ -2258,34 +2645,70 @@ class WorkbenchMainWindow:
             return self._loaded_result["binary"]
         return self._loaded_result["probability"]
 
-    def _array_to_pixmap(self, image):
+    def _array_to_pixmap(self, image, *, colorize: bool = False):
         import numpy as np
         from PySide6.QtCore import Qt
         from PySide6.QtGui import QImage, QPixmap
 
         array = np.asarray(image)
-        if array.dtype == bool:
+        if array.ndim != 2:
+            raise ValueError("Slice preview requires a 2D image.")
+
+        pad_y = max(4, int(round(array.shape[0] * 0.04)))
+        pad_x = max(4, int(round(array.shape[1] * 0.04)))
+
+        if colorize:
+            values = array.astype(np.float32, copy=False)
+            values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+            max_value = float(values.max()) if values.size else 0.0
+            if max_value <= 1.0:
+                normalized = values
+            elif max_value <= 100.0:
+                normalized = values / 100.0
+            else:
+                normalized = values / 255.0
+            normalized = np.pad(
+                normalized,
+                ((pad_y, pad_y), (pad_x, pad_x)),
+                mode="constant",
+                constant_values=0.0,
+            )
+            rgb = np.ascontiguousarray(np.flipud(_workbench_colormap(normalized)))
+            height, width, _channels = rgb.shape
+            qimage = QImage(
+                rgb.data,
+                width,
+                height,
+                width * 3,
+                QImage.Format.Format_RGB888,
+            ).copy()
+        elif array.dtype == bool:
             array = array.astype(np.uint8) * 255
+            array = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x)), mode="constant")
+            array = np.ascontiguousarray(np.flipud(array))
+            height, width = array.shape
+            qimage = QImage(
+                array.data,
+                width,
+                height,
+                width,
+                QImage.Format.Format_Grayscale8,
+            ).copy()
         else:
             array = array.astype(np.float32)
             if array.size and array.max() > array.min():
                 array = 255.0 * (array - array.min()) / (array.max() - array.min())
             array = array.astype(np.uint8)
-
-        if array.ndim != 2:
-            raise ValueError("Slice preview requires a 2D image.")
-        pad_y = max(4, int(round(array.shape[0] * 0.04)))
-        pad_x = max(4, int(round(array.shape[1] * 0.04)))
-        array = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x)), mode="constant")
-        array = np.ascontiguousarray(np.flipud(array))
-        height, width = array.shape
-        qimage = QImage(
-            array.data,
-            width,
-            height,
-            width,
-            QImage.Format.Format_Grayscale8,
-        ).copy()
+            array = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x)), mode="constant")
+            array = np.ascontiguousarray(np.flipud(array))
+            height, width = array.shape
+            qimage = QImage(
+                array.data,
+                width,
+                height,
+                width,
+                QImage.Format.Format_Grayscale8,
+            ).copy()
         pixmap = QPixmap.fromImage(qimage)
         target_size = self._slice_label.contentsRect().size()
         if target_size.width() <= 0 or target_size.height() <= 0:
@@ -2578,6 +3001,58 @@ class WorkbenchMainWindow:
             return None
         return {part.strip() for part in text.split(",") if part.strip()}
 
+    def _model_calibration_run_configuration(self, output_dir: Path) -> dict[str, object]:
+        backend_value = (
+            self._calibration_processor.currentData()
+            if hasattr(self, "_calibration_processor")
+            else None
+        )
+        return {
+            "format": "virtual_pbf.model_calibration_run.v1",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "geometry_path": str(
+                self._last_calibration_geometry_path or self._calibration_geometry.text().strip()
+            ),
+            "roi_sample_folder": self._calibration_sample_dir.text().strip(),
+            "sample_filter": self._calibration_sample_filter.text().strip(),
+            "voxel_spacing_mm": self._calibration_spacing.text().strip(),
+            "search_method": self._calibration_optimizer.currentData(),
+            "evaluations": int(self._calibration_max_evaluations.value()),
+            "parallel_samples": int(self._calibration_parallel_samples.value()),
+            "solver": {
+                "backend": backend_value,
+                "label": self._solver_label(str(backend_value)) if backend_value else None,
+            },
+            "output_dir": str(output_dir),
+            "machine_map_defaults": {
+                "preset_name": self._machine_map_name.text().strip() or "Machine Map",
+                "sp_coordinates": self._machine_map_coordinates.text().strip(),
+                "contour_grid": int(self._machine_map_resolution.value()),
+            },
+        }
+
+    def _machine_map_run_configuration(self, output_dir: Path, result) -> dict[str, object]:
+        calibration_config = self._model_calibration_run_configuration(output_dir)
+        return {
+            "format": "virtual_pbf.machine_parameter_map_run.v1",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "requested_preset_name": self._machine_map_name.text().strip() or "Machine Map",
+            "generated_preset_name": result.preset_name,
+            "output_root": str(output_dir),
+            "weights_csv": str(result.weights_csv) if result.weights_csv is not None else None,
+            "sp_coordinates": str(result.coordinates_xlsx)
+            if result.coordinates_xlsx is not None
+            else self._machine_map_coordinates.text().strip(),
+            "contour_grid": int(result.resolution),
+            "voxel_spacing_mm": result.voxel_spacing,
+            "source": (
+                "in_memory_model_calibration"
+                if self._last_calibration_result is not None
+                else "saved_model_calibration_weights"
+            ),
+            "model_calibration": calibration_config,
+        }
+
     def _recommended_parallel_samples(self) -> int:
         import os
 
@@ -2666,9 +3141,15 @@ class WorkbenchMainWindow:
         geometry_path = self._last_calibration_geometry_path or Path(
             self._calibration_geometry.text().strip()
         )
+        run_configuration = self._model_calibration_run_configuration(output_dir)
         self._append_log(f"Saving Model Calibration outputs to: {output_dir}")
         self._set_busy(True, "Saving Model Calibration outputs...", task="calibration_save")
-        worker = _SaveModelCalibrationWorker(str(output_dir), result, str(geometry_path))
+        worker = _SaveModelCalibrationWorker(
+            str(output_dir),
+            result,
+            str(geometry_path),
+            run_configuration,
+        )
         worker.signals.progress.connect(self._set_model_calibration_progress)
         worker.signals.finished.connect(self._model_calibration_save_finished)
         worker.signals.failed.connect(self._model_calibration_save_failed)
@@ -2693,7 +3174,10 @@ class WorkbenchMainWindow:
         self._calibration_progress_message.setText(
             f"Model Calibration outputs saved in {elapsed:.2f}s"
         )
-        self._append_log(f"Model Calibration outputs saved: {csv_path}")
+        self._append_log(
+            f"Model Calibration outputs saved: {csv_path}, "
+            f"{output_path / 'run_configuration.json'}"
+        )
         self._set_busy(False, "Model Calibration outputs saved")
 
     def _model_calibration_save_failed(self, message: str) -> None:
@@ -3011,7 +3495,11 @@ class WorkbenchMainWindow:
 
         self._append_log(f"Saving Machine Parameter Map to: {output_dir}")
         self._set_busy(True, "Saving Machine Parameter Map...", task="machine_map_save")
-        worker = _SaveMachineMapWorker(str(output_dir), result)
+        worker = _SaveMachineMapWorker(
+            str(output_dir),
+            result,
+            self._machine_map_run_configuration(output_dir, result),
+        )
         worker.signals.progress.connect(self._set_machine_map_progress)
         worker.signals.finished.connect(self._machine_map_save_finished)
         worker.signals.failed.connect(self._machine_map_save_failed)
@@ -3028,6 +3516,7 @@ class WorkbenchMainWindow:
                     f"Folder: {result.output_dir}",
                     f"Map: {result.map_npz}",
                     f"Metadata: {result.metadata_json}",
+                    f"Configuration: {result.configuration_json}",
                     f"Grid: {result.grid_csv}",
                     f"Samples: {result.sample_csv}",
                 ]
@@ -3043,7 +3532,8 @@ class WorkbenchMainWindow:
         self._load_machine_map_contour(result.map_npz)
         self._append_log(
             "Machine parameter map saved: "
-            f"{result.map_npz}, {result.metadata_json}, {result.grid_csv}, {result.sample_csv}"
+            f"{result.map_npz}, {result.metadata_json}, "
+            f"{result.configuration_json}, {result.grid_csv}, {result.sample_csv}"
         )
         self._append_log(f"Machine preset set to saved map: {result.preset_name}.")
         self._set_busy(False, "Machine parameter map saved")

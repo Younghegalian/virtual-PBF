@@ -8,6 +8,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import copy2
 from time import perf_counter
 from xml.etree import ElementTree
 
@@ -63,6 +64,7 @@ class MachineMapExportResult:
     grid_csv: Path
     sample_csv: Path
     metadata_json: Path
+    configuration_json: Path | None
     resolution: int
     sample_count: int
     elapsed_seconds: float
@@ -352,19 +354,26 @@ def save_machine_parameter_map_outputs(
     coordinates_xlsx: str | Path | None = None,
     elapsed_seconds: float = 0.0,
     voxel_spacing: float | None = None,
+    run_configuration: dict[str, object] | None = None,
 ) -> MachineMapExportResult:
-    folder = Path(output_dir) / "machine_presets" / _preset_directory_name(preset_name)
+    effective_preset_name, folder = _unique_preset_folder(Path(output_dir), preset_name)
     folder.mkdir(parents=True, exist_ok=True)
     map_npz = folder / "machine_parameter_map.npz"
     grid_csv = folder / "machine_parameter_grid.csv"
     sample_csv = folder / "machine_parameter_samples.csv"
     metadata_json = folder / "machine_parameter_map.json"
+    configuration_json = folder / "run_configuration.json"
+    copied_inputs = _copy_machine_map_inputs(
+        folder,
+        weights_csv=weights_csv,
+        coordinates_xlsx=coordinates_xlsx,
+    )
 
     coordinate_by_sample = {coord.sample: coord for coord in coordinates}
     sample_rows = _joined_sample_rows(parameters, coordinate_by_sample, model.normalizer)
     np.savez_compressed(
         map_npz,
-        preset_name=np.asarray([preset_name.strip() or "Machine Map"]),
+        preset_name=np.asarray([effective_preset_name]),
         parameter_names=np.asarray(PARAMETER_NAMES),
         x_normalized=grid["X"],
         y_normalized=grid["Y"],
@@ -397,22 +406,31 @@ def save_machine_parameter_map_outputs(
         sample_rows=sample_rows,
         normalizer=model.normalizer,
         resolution=resolution,
-        preset_name=preset_name,
+        preset_name=effective_preset_name,
         weights_csv=weights_csv,
         coordinates_xlsx=coordinates_xlsx,
+        copied_inputs=copied_inputs,
         elapsed_seconds=elapsed_seconds,
         voxel_spacing=voxel_spacing,
     )
+    if run_configuration is not None:
+        payload = dict(run_configuration)
+        payload["saved_preset_name"] = effective_preset_name
+        payload["preset_folder"] = str(folder)
+        configuration_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    else:
+        configuration_json = None
     return MachineMapExportResult(
         output_dir=folder,
         map_npz=map_npz,
         grid_csv=grid_csv,
         sample_csv=sample_csv,
         metadata_json=metadata_json,
+        configuration_json=configuration_json,
         resolution=int(resolution),
         sample_count=len(sample_rows),
         elapsed_seconds=float(elapsed_seconds),
-        preset_name=preset_name.strip() or "Machine Map",
+        preset_name=effective_preset_name,
         voxel_spacing=voxel_spacing,
     )
 
@@ -548,6 +566,7 @@ def _write_metadata_json(
     preset_name: str,
     weights_csv: str | Path | None,
     coordinates_xlsx: str | Path | None,
+    copied_inputs: dict[str, str],
     elapsed_seconds: float,
     voxel_spacing: float | None,
 ) -> None:
@@ -581,6 +600,7 @@ def _write_metadata_json(
         "sources": {
             "weights_csv": str(weights_csv) if weights_csv is not None else None,
             "coordinates_xlsx": str(coordinates_xlsx) if coordinates_xlsx is not None else None,
+            "copied_inputs": copied_inputs,
         },
         "outputs": {
             "grid_npz": "machine_parameter_map.npz",
@@ -597,6 +617,47 @@ def _preset_directory_name(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (name or "Machine Map").strip())
     safe = safe.strip("._-")
     return safe or "Machine_Map"
+
+
+def _unique_preset_folder(output_dir: Path, preset_name: str) -> tuple[str, Path]:
+    base_name = (preset_name or "Machine Map").strip() or "Machine Map"
+    base_folder_name = _preset_directory_name(base_name)
+    parent = output_dir / "machine_presets"
+    folder = parent / base_folder_name
+    if not folder.exists() or (folder.is_dir() and not any(folder.iterdir())):
+        return base_name, folder
+
+    for index in range(2, 1000):
+        suffix = f"{index:03d}"
+        candidate = parent / f"{base_folder_name}_{suffix}"
+        if not candidate.exists() or (candidate.is_dir() and not any(candidate.iterdir())):
+            return f"{base_name} {suffix}", candidate
+    raise FileExistsError(f"Too many machine preset folders named like '{base_folder_name}'.")
+
+
+def _copy_machine_map_inputs(
+    folder: Path,
+    *,
+    weights_csv: str | Path | None,
+    coordinates_xlsx: str | Path | None,
+) -> dict[str, str]:
+    inputs_dir = folder / "inputs"
+    copied: dict[str, str] = {}
+    for key, source in (
+        ("weights_csv", weights_csv),
+        ("coordinates_xlsx", coordinates_xlsx),
+    ):
+        if source is None:
+            continue
+        source_path = Path(source)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        target = inputs_dir / source_path.name
+        if source_path.resolve() != target.resolve():
+            copy2(source_path, target)
+        copied[key] = str(target)
+    return copied
 
 
 def _csv_value(row: dict[str, str], key: str) -> str:

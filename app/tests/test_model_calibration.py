@@ -158,13 +158,21 @@ def test_save_model_calibration_outputs_writes_weights_and_artifacts(tmp_path):
     )
     result = ModelCalibrationRunResult(samples=(sample,), output_dir=tmp_path, elapsed_seconds=0.02)
 
-    save_model_calibration_outputs(tmp_path, result, save_research_artifacts=True)
+    save_model_calibration_outputs(
+        tmp_path,
+        result,
+        save_research_artifacts=True,
+        run_configuration={"format": "test.model_calibration", "evaluations": 1},
+    )
 
     csv_text = (tmp_path / "model_calibration_weights.csv").read_text(encoding="utf-8")
     assert "Sample,param1,param2,param3,param4,param5,param6,Loss" in csv_text
     assert "A1,0.1,0.2,0.3,0.4,0.05,0.6,1.5" in csv_text
     artifact_path = tmp_path / "A1_model_calibration_artifacts.npz"
     assert artifact_path.exists()
+    config_text = (tmp_path / "run_configuration.json").read_text(encoding="utf-8")
+    assert '"format": "test.model_calibration"' in config_text
+    assert '"evaluations": 1' in config_text
     artifact = np.load(artifact_path)
     assert artifact["target_x"].sum() == 2
     assert artifact["target_y"].sum() == 2
@@ -427,3 +435,63 @@ def test_adaptive_sobol_uses_full_evaluation_budget(monkeypatch):
     assert len(calls) == 10
     assert len(set(calls)) == 10
     assert result.samples[0].evaluations == 10
+
+
+def test_global_evolution_uses_full_evaluation_budget(monkeypatch):
+    from capp.calibration import model_calibration as module
+
+    calls = []
+    roi = np.zeros((23, 57), dtype=bool)
+    roi[5:15, 20:30] = True
+
+    class FakePipeline:
+        def __init__(self, solver):
+            self.solver = solver
+
+        def run_voxel_grid(self, grid, parameters, progress_callback=None):
+            calls.append(
+                (
+                    *parameters.current_as_directional(),
+                    parameters.min_bias,
+                    parameters.initial_deviation,
+                )
+            )
+            volume = np.ones(grid.shape, dtype=bool)
+            return SimulationResult(
+                probability=np.full(grid.shape, 100, dtype=np.uint8),
+                binary=volume,
+                voxel=grid.data,
+                spacing=grid.spacing,
+                origin=grid.origin,
+                rest_volume=100.0,
+                probability_density=100.0,
+                elapsed_seconds=0.01,
+            )
+
+    monkeypatch.setattr(module, "create_solver", lambda _parameters: object())
+    monkeypatch.setattr(module, "SimulationPipeline", FakePipeline)
+    monkeypatch.setattr(module, "simulation_rois", lambda _binary: (roi, roi))
+
+    progress_messages = []
+    result = run_model_calibration(
+        VoxelGrid(data=np.ones((4, 4, 4), dtype=bool), spacing=0.1),
+        [module.ModelCalibrationTarget(sample="A1", roi_x=roi, roi_y=roi)],
+        options=ModelCalibrationOptions(
+            max_evaluations=12,
+            backend=SolverBackend.CPU_REFERENCE,
+            max_workers=2,
+            optimizer="global_evolution",
+        ),
+        progress_callback=lambda percent, message: progress_messages.append((percent, message)),
+    )
+
+    assert len(calls) == 12
+    assert len(set(calls)) == 12
+    assert result.samples[0].evaluations == 12
+    assert any("evolution candidate" in message for _percent, message in progress_messages)
+
+
+def test_global_evolution_optimizer_alias_accepts_spaces():
+    options = ModelCalibrationOptions(optimizer="Global Evolution")
+
+    assert options.optimizer == "global_evolution"

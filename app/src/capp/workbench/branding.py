@@ -5,7 +5,7 @@ import sys
 
 APP_NAME = "Virtual PBF Workbench"
 APP_ORGANIZATION = "Virtual PBF"
-APP_ID = "virtual-pbf.workbench"
+APP_ID = "VirtualPBF.Workbench"
 
 
 def app_icon_path() -> Path:

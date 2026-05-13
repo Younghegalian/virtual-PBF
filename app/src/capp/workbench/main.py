@@ -4,6 +4,9 @@ import sys
 
 
 def main() -> int:
+    from capp.workbench.branding import configure_windows_app_id
+
+    configure_windows_app_id()
     try:
         from PySide6.QtWidgets import QApplication
     except ImportError:
@@ -11,9 +14,8 @@ def main() -> int:
         return 1
 
     from capp.workbench.app import WorkbenchMainWindow
-    from capp.workbench.branding import apply_app_branding, configure_windows_app_id
+    from capp.workbench.branding import apply_app_branding
 
-    configure_windows_app_id()
     app = QApplication(sys.argv)
     apply_app_branding(app)
     window = WorkbenchMainWindow()
