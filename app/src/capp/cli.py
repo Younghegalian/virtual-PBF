@@ -53,11 +53,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Export per-sample ROI TIFFs and best 3D STL/VTK calibration artifacts.",
     )
-    calibrate.add_argument(
-        "--save-research-artifacts",
-        action="store_true",
-        help="Export per-sample ROI TIFFs and best 3D STL/VTK calibration artifacts.",
-    )
 
     machine_map = subparsers.add_parser(
         "machine-map",
@@ -68,7 +63,6 @@ def main(argv: list[str] | None = None) -> int:
     machine_map.add_argument("--output", required=True, type=Path)
     machine_map.add_argument("--resolution", default=200, type=int)
     machine_map.add_argument("--name", default="Machine Map")
-    machine_map.add_argument("--voxel-spacing", type=float)
     machine_map.add_argument("--voxel-spacing", type=float)
 
     inspect_mat = subparsers.add_parser("inspect-mat", help="Inspect MATLAB data file headers.")
