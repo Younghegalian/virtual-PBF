@@ -540,6 +540,7 @@ class WorkbenchMainWindow:
         self._window.setWindowTitle(APP_NAME)
         self._window.setWindowIcon(QIcon(str(app_icon_path())))
         self._window.resize(1600, 960)
+        self._current_theme = "workbench_light"
         self._settings = QSettings(APP_ORGANIZATION, APP_NAME)
 
         self._QFileDialog = QFileDialog
@@ -658,8 +659,11 @@ class WorkbenchMainWindow:
         self._navigation.addItem(item)
         self._stack.addWidget(widget)
 
-    def _apply_style(self) -> None:
-        self._window.setStyleSheet(
+    def _apply_style(self, theme: str | None = None) -> None:
+        if theme is not None:
+            self._current_theme = theme
+        theme = getattr(self, "_current_theme", "workbench_light")
+        base_style = (
             """
             QMainWindow {
                 background: #e6ebf1;
@@ -896,6 +900,168 @@ class WorkbenchMainWindow:
             }
             """
         )
+        theme_override = ""
+        if theme == "graphite":
+            theme_override = """
+            QMainWindow, #Page, #FeatureStack {
+                background: #c9d1dc;
+            }
+            #Navigation {
+                background: #253140;
+                border-right-color: #111827;
+                color: #e5edf6;
+            }
+            #Navigation::item {
+                color: #e5edf6;
+            }
+            #Navigation::item:hover {
+                background: #344255;
+            }
+            #Navigation::item:selected {
+                background: #3f5875;
+                border-left-color: #62b8ff;
+                color: #ffffff;
+            }
+            QLabel#PageTitle {
+                background: #2f3d50;
+                border-bottom-color: #16202c;
+                color: #ffffff;
+            }
+            QWidget#PreviewHeader, QLabel#LogHeader {
+                background: #344255;
+                border-color: #16202c;
+                color: #ffffff;
+            }
+            QWidget#ParameterPane, QWidget#ViewerPane, QWidget#ResultPane,
+            QWidget#ParameterViewport, QWidget#ParameterContent, QWidget#ResultContent {
+                background: #e4e9ef;
+                background-color: #e4e9ef;
+                border-color: #7b8797;
+            }
+            QGroupBox {
+                background: #edf1f5;
+                background-color: #edf1f5;
+                border-color: #7b8797;
+            }
+            QGroupBox::title {
+                background: #edf1f5;
+                color: #0f172a;
+            }
+            QScrollArea#ParameterScroll {
+                background: #e4e9ef;
+            }
+            QLineEdit, QComboBox {
+                background: #f9fbfd;
+                border-color: #8794a5;
+            }
+            QLabel#BackendStatus {
+                background: #d6dde7;
+                border-color: #96a1af;
+                color: #253140;
+            }
+            QLabel#SliceView, QWidget#PreviewPane, QLabel#PreviewStatus,
+            QPlainTextEdit#Log, QPlainTextEdit#DetailsText {
+                background: #f8fafc;
+                background-color: #f8fafc;
+                border-color: #7b8797;
+                color: #111827;
+            }
+            QPushButton {
+                background: #d8e0ea;
+                border-color: #728197;
+            }
+            QPushButton:hover {
+                background: #c8d7e8;
+                border-color: #4c6b91;
+            }
+            QPushButton#PrimaryButton {
+                background: #9ecdf7;
+                border-color: #2563a7;
+                color: #0b1724;
+            }
+            QProgressBar {
+                background: #e7ebf0;
+                border-color: #7b8797;
+            }
+            QProgressBar::chunk {
+                background: #2f8de4;
+            }
+            QStatusBar {
+                background: #b7c2cf;
+                border-top-color: #7b8797;
+            }
+            QSplitter::handle {
+                background: #6e7b8c;
+            }
+            """
+        elif theme == "clean_light":
+            theme_override = """
+            QMainWindow, #Page, #FeatureStack {
+                background: #f8fafc;
+            }
+            #Navigation {
+                background: #ffffff;
+                border-right-color: #d8e1eb;
+            }
+            #Navigation::item {
+                color: #172033;
+            }
+            #Navigation::item:selected {
+                background: #eaf5ff;
+                border-left-color: #0891d6;
+                color: #0f172a;
+            }
+            QLabel#PageTitle, QWidget#PreviewHeader, QLabel#LogHeader {
+                background: #ffffff;
+                border-color: #d8e1eb;
+                color: #0f172a;
+            }
+            QWidget#ParameterPane, QWidget#ViewerPane, QWidget#ResultPane,
+            QWidget#ParameterViewport, QWidget#ParameterContent, QWidget#ResultContent,
+            QGroupBox, QGroupBox::title, QScrollArea#ParameterScroll {
+                background: #ffffff;
+                background-color: #ffffff;
+                border-color: #d8e1eb;
+            }
+            QLabel#BackendStatus {
+                background: #f8fbff;
+                border-color: #d8e1eb;
+            }
+            QLabel#SliceView, QWidget#PreviewPane, QLabel#PreviewStatus,
+            QPlainTextEdit#Log, QPlainTextEdit#DetailsText {
+                background: #ffffff;
+                background-color: #ffffff;
+                border-color: #d8e1eb;
+            }
+            QLineEdit, QComboBox {
+                background: #ffffff;
+                border-color: #cbd6e2;
+            }
+            QPushButton {
+                background: #ffffff;
+                border-color: #b8c7d8;
+            }
+            QPushButton:hover {
+                background: #f0f8ff;
+                border-color: #6ba7d8;
+            }
+            QPushButton#PrimaryButton {
+                background: #d9f0ff;
+                border-color: #0f87c8;
+                color: #0f172a;
+            }
+            QProgressBar::chunk {
+                background: #0ea5e9;
+            }
+            QStatusBar {
+                background: #ffffff;
+                border-top-color: #d8e1eb;
+            }
+            QSplitter::handle {
+                background: #dde6ef;
+            }
+            """
+        self._window.setStyleSheet(base_style + theme_override)
 
     def _page_title(self, text: str):
         from PySide6.QtWidgets import QLabel
@@ -1751,6 +1917,17 @@ class WorkbenchMainWindow:
 
         defaults = self._preference_defaults()
 
+        interface_box = QGroupBox("Interface")
+        interface_form = QFormLayout(interface_box)
+        self._configure_form(interface_form)
+        theme = QComboBox()
+        theme.addItem("Workbench Light", "workbench_light")
+        theme.addItem("Graphite Workbench", "graphite")
+        theme.addItem("Clean Light", "clean_light")
+        self._preference_fields["interface_theme"] = theme
+        interface_form.addRow("Theme", theme)
+        content_layout.addWidget(interface_box)
+
         path_box = QGroupBox("Default Paths")
         path_form = QFormLayout(path_box)
         self._configure_form(path_form)
@@ -1915,6 +2092,7 @@ class WorkbenchMainWindow:
 
     def _preference_defaults(self) -> dict[str, str]:
         return {
+            "interface_theme": "workbench_light",
             "simulation_output_dir": "examples/outputs/gui_simulation",
             "calibration_output_dir": "examples/outputs/model_calibration",
             "calibration_geometry": str(self._default_calibration_geometry_path()),
@@ -2026,6 +2204,7 @@ class WorkbenchMainWindow:
             return
 
     def _apply_preferences_to_forms(self, values: dict[str, str]) -> None:
+        self._apply_style(values.get("interface_theme", "workbench_light"))
         self._set_line_edit_if_present("_output_dir", values.get("simulation_output_dir", ""))
         self._set_line_edit_if_present(
             "_calibration_output_dir", values.get("calibration_output_dir", "")
@@ -2165,7 +2344,7 @@ class WorkbenchMainWindow:
         if path:
             self._machine_map_path.setText(path)
             self._machine_preset.setCurrentText("Machine Map")
-            self._refresh_machine_map_name()
+            self._refresh_machine_map_name(load_contour=True)
             self._append_log(f"Machine parameter map selected: {path}")
 
     def _update_machine_map_coordinate_fields(self) -> None:
@@ -2187,7 +2366,7 @@ class WorkbenchMainWindow:
         for widget in self._machine_map_bounds_widgets:
             widget.setEnabled(bounds_mode)
 
-    def _refresh_machine_map_name(self) -> None:
+    def _refresh_machine_map_name(self, *, load_contour: bool = False) -> None:
         text = self._machine_map_path.text().strip()
         if not text:
             self._machine_map_preset_name.setText("-")
@@ -2206,7 +2385,7 @@ class WorkbenchMainWindow:
             self._machine_map_preset_name.setText(label)
             if self._machine_preset.currentText() == "Machine Map":
                 self._apply_machine_map_spacing(metadata.voxel_spacing)
-            if hasattr(self, "_machine_map_contour_label"):
+            if load_contour and hasattr(self, "_machine_map_contour_label"):
                 self._load_machine_map_contour(path, silent=True)
         except Exception as exc:
             self._machine_map_preset_name.setText(f"Unreadable map: {exc}")
