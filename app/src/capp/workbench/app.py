@@ -497,6 +497,7 @@ class WorkbenchMainWindow:
             }
             QWidget#ParameterViewport, QWidget#ParameterContent, QWidget#ResultContent {
                 background: #f7f9fb;
+                background-color: #f7f9fb;
             }
             QGroupBox {
                 background: #f7f9fb;
@@ -529,6 +530,7 @@ class WorkbenchMainWindow:
             }
             QPlainTextEdit#DetailsText {
                 background: #ffffff;
+                background-color: #ffffff;
                 color: #111827;
                 border: 1px solid #b7c0ca;
                 border-radius: 1px;
@@ -588,6 +590,7 @@ class WorkbenchMainWindow:
             }
             QPlainTextEdit#Log {
                 background: #ffffff;
+                background-color: #ffffff;
                 border: 0;
                 border-bottom: 1px solid #aeb7c2;
                 font-family: Consolas, "Courier New", monospace;
@@ -1156,6 +1159,7 @@ class WorkbenchMainWindow:
         left_shell_layout.addWidget(self._page_title("Model Calibration"))
 
         left_content = QWidget()
+        left_content.setObjectName("ParameterContent")
         left_layout = QVBoxLayout(left_content)
         left_layout.setContentsMargins(4, 4, 4, 4)
         left_layout.setSpacing(4)
@@ -1243,6 +1247,25 @@ class WorkbenchMainWindow:
         self._calibration_details.setObjectName("DetailsText")
         self._calibration_details.setReadOnly(True)
         self._calibration_details.setMaximumHeight(130)
+        self._calibration_details.setStyleSheet(
+            """
+            QPlainTextEdit#DetailsText {
+                background: #ffffff;
+                background-color: #ffffff;
+                color: #111827;
+                border: 1px solid #b7c0ca;
+                border-radius: 1px;
+                padding: 3px;
+                selection-background-color: #bfdbfe;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 9px;
+            }
+            QPlainTextEdit#DetailsText QWidget {
+                background: #ffffff;
+                background-color: #ffffff;
+            }
+            """
+        )
         self._calibration_details.setPlainText("-")
         progress_form.addRow("Details", self._calibration_details)
         left_layout.addWidget(progress_box)
