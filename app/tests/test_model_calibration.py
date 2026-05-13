@@ -240,7 +240,7 @@ def test_model_calibration_reports_candidate_start_progress(monkeypatch):
 
         def run_voxel_grid(self, grid, parameters, progress_callback=None):
             if progress_callback is not None:
-                progress_callback(50, "CUDA layer 12/24")
+                progress_callback(50, "Running PBF X solver")
             volume = np.ones(grid.shape, dtype=bool)
             return SimulationResult(
                 probability=np.full(grid.shape, 100, dtype=np.uint8),
@@ -271,7 +271,7 @@ def test_model_calibration_reports_candidate_start_progress(monkeypatch):
     )
 
     assert any("Running candidate 1/2 with PBF Standard" in msg for _, msg in progress_messages)
-    assert any("Candidate 1/2: CUDA layer 12/24" in msg for _, msg in progress_messages)
+    assert any("Candidate 1/2: Running PBF X solver" in msg for _, msg in progress_messages)
 
 
 def test_cuda_model_calibration_keeps_requested_parallel_workers(monkeypatch):
@@ -337,7 +337,7 @@ def test_parallel_candidate_solver_progress_is_aggregated(monkeypatch):
         def run_voxel_grid(self, grid, parameters, progress_callback=None):
             barrier.wait(timeout=5)
             if progress_callback is not None:
-                progress_callback(50, "CUDA layer 12/24")
+                progress_callback(50, "Running PBF X solver")
             volume = np.ones(grid.shape, dtype=bool)
             return SimulationResult(
                 probability=np.full(grid.shape, 100, dtype=np.uint8),
@@ -370,7 +370,7 @@ def test_parallel_candidate_solver_progress_is_aggregated(monkeypatch):
     running_progress = [
         percent
         for percent, message in progress_messages
-        if message.endswith("CUDA layer 12/24")
+        if message.endswith("Running PBF X solver")
     ]
     assert running_progress
     assert max(running_progress) > 25

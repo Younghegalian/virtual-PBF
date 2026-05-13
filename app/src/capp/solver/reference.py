@@ -195,7 +195,7 @@ class _ProgressReporter:
         safe_iteration_bound = max(1, iteration_bound)
         layer_fraction = (layer - 1 + min(iteration, safe_iteration_bound) / safe_iteration_bound)
         percent = int((layer_fraction / max(1, layer_count)) * 92)
-        self.report(percent, f"Solving layer {layer}/{layer_count}")
+        self.report(percent, "Solving virtual printing field")
 
 
 def _kernel_coefficients(parameters: SolverParameters):

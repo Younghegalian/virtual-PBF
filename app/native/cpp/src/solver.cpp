@@ -373,7 +373,7 @@ py::dict solve_von_neumann(
 
   {
     py::gil_scoped_release release;
-    report_progress(0, "Preparing native layerwise solver");
+    report_progress(0, "Preparing PBF Q solver");
 
     for (std::size_t i = 0; i < padded.x; ++i) {
       for (std::size_t j = 0; j < padded.y; ++j) {
@@ -414,8 +414,7 @@ py::dict solve_von_neumann(
                             (static_cast<float>(layer - 1) /
                              std::max<std::size_t>(1, cropped.z)) *
                             89.0F);
-      report_progress(percent, "Native layer " + std::to_string(layer) + "/" +
-                                   std::to_string(cropped.z));
+      report_progress(percent, "Running PBF Q solver");
 
       if (static_cast<int>(layer) <= beta) {
         for (std::size_t i = 0; i < cropped.x; ++i) {
@@ -570,7 +569,7 @@ py::dict solve_von_neumann(
       static_cast<double>(probability_sum) / static_cast<double>(solid_count);
   result["elapsed_seconds"] = elapsed;
   if (has_progress) {
-    progress_callback(100, "Native layerwise solver complete");
+    progress_callback(100, "PBF Q solver complete");
   }
   return result;
 }
