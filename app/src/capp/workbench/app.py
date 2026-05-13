@@ -7,6 +7,44 @@ from time import perf_counter
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 
+def _workbench_colormap(values):
+    import numpy as np
+
+    palette = np.asarray(
+        [
+            (22, 34, 68),
+            (27, 87, 145),
+            (31, 154, 177),
+            (113, 204, 159),
+            (246, 211, 101),
+            (231, 111, 81),
+        ],
+        dtype=np.float64,
+    )
+    clipped = np.clip(np.asarray(values, dtype=np.float64), 0.0, 1.0)
+    scaled = clipped * (len(palette) - 1)
+    lower = np.floor(scaled).astype(np.int32)
+    upper = np.clip(lower + 1, 0, len(palette) - 1)
+    fraction = (scaled - lower)[..., None]
+    rgb = palette[lower] * (1.0 - fraction) + palette[upper] * fraction
+    return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
+def _roi_overlay_rgb(target_array, simulated_array):
+    import numpy as np
+
+    target = np.asarray(target_array, dtype=bool)
+    simulated = np.asarray(simulated_array, dtype=bool)
+    rgb = np.full((*target.shape, 3), 248, dtype=np.uint8)
+    target_only = target & ~simulated
+    simulated_only = simulated & ~target
+    overlap = target & simulated
+    rgb[target_only] = (224, 132, 58)
+    rgb[simulated_only] = (56, 116, 196)
+    rgb[overlap] = (62, 153, 101)
+    return np.ascontiguousarray(rgb)
+
+
 class _StlPreviewWorkerSignals(QObject):
     finished = Signal(str, object, int, float)
     failed = Signal(str, str)
@@ -2422,14 +2460,7 @@ class WorkbenchMainWindow:
 
         target_array = np.asarray(target, dtype=bool)
         simulated_array = self._resize_mask_to_shape(simulated, target_array.shape)
-        rgb = np.full((*target_array.shape, 3), 248, dtype=np.uint8)
-        target_only = target_array & ~simulated_array
-        simulated_only = simulated_array & ~target_array
-        overlap = target_array & simulated_array
-        rgb[target_only] = (224, 132, 58)
-        rgb[simulated_only] = (56, 116, 196)
-        rgb[overlap] = (62, 153, 101)
-        rgb = np.ascontiguousarray(np.flipud(rgb))
+        rgb = _roi_overlay_rgb(target_array, simulated_array)
         height, width, _ = rgb.shape
         qimage = QImage(
             rgb.data,
@@ -2642,8 +2673,10 @@ class WorkbenchMainWindow:
 
     def _machine_map_contour_pixmap(self, values):
         import numpy as np
-        from PySide6.QtCore import QPointF
-        from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap, QPolygonF
+        from scipy.ndimage import zoom
+        from skimage.measure import find_contours
 
         array = np.asarray(values, dtype=np.float64)
         finite = np.isfinite(array)
@@ -2656,21 +2689,30 @@ class WorkbenchMainWindow:
                 normalized = np.zeros(array.shape, dtype=np.float64)
             else:
                 normalized = np.clip((array - lo) / (hi - lo), 0.0, 1.0)
-        low = np.array([41, 98, 156], dtype=np.float64)
-        mid = np.array([238, 241, 236], dtype=np.float64)
-        high = np.array([200, 103, 54], dtype=np.float64)
-        rgb = np.empty((*normalized.shape, 3), dtype=np.uint8)
-        lower_half = normalized <= 0.5
-        t_low = np.clip(normalized * 2.0, 0.0, 1.0)[..., None]
-        t_high = np.clip((normalized - 0.5) * 2.0, 0.0, 1.0)[..., None]
-        rgb[lower_half] = (low * (1.0 - t_low[lower_half]) + mid * t_low[lower_half]).astype(
-            np.uint8
-        )
-        rgb[~lower_half] = (
-            mid * (1.0 - t_high[~lower_half]) + high * t_high[~lower_half]
-        ).astype(np.uint8)
-        rgb[~finite] = (220, 224, 230)
-        rgb = np.ascontiguousarray(np.flipud(rgb))
+
+        plot_width = 640
+        plot_height = 360
+        canvas_width = 760
+        canvas_height = 430
+        left = 46
+        top = 26
+        bar_left = left + plot_width + 24
+        bar_width = 18
+        safe_normalized = np.nan_to_num(normalized, nan=0.0)
+        if safe_normalized.size:
+            zoom_factors = (
+                max(1.0, plot_height / safe_normalized.shape[0]),
+                max(1.0, plot_width / safe_normalized.shape[1]),
+            )
+            display_values = zoom(safe_normalized, zoom_factors, order=1)
+            display_values = display_values[:plot_height, :plot_width]
+            if display_values.shape != (plot_height, plot_width):
+                padded = np.zeros((plot_height, plot_width), dtype=np.float64)
+                padded[: display_values.shape[0], : display_values.shape[1]] = display_values
+                display_values = padded
+        else:
+            display_values = np.zeros((plot_height, plot_width), dtype=np.float64)
+        rgb = np.ascontiguousarray(_workbench_colormap(np.flipud(display_values)))
         height, width, _ = rgb.shape
         qimage = QImage(
             rgb.data,
@@ -2679,19 +2721,98 @@ class WorkbenchMainWindow:
             width * 3,
             QImage.Format.Format_RGB888,
         ).copy()
-        pixmap = QPixmap.fromImage(qimage)
+        pixmap = QPixmap(canvas_width, canvas_height)
+        pixmap.fill(QColor(248, 250, 252))
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor(24, 24, 27), 2))
+        painter.drawImage(left, top, qimage)
+
+        painter.setPen(QPen(QColor(226, 232, 240), 1))
+        for step in range(1, 5):
+            x = left + step * plot_width / 5
+            y = top + step * plot_height / 5
+            painter.drawLine(QPointF(x, top), QPointF(x, top + plot_height))
+            painter.drawLine(QPointF(left, y), QPointF(left + plot_width, y))
+
+        painter.setPen(QPen(QColor(15, 23, 42), 1))
+        painter.drawRect(left, top, plot_width, plot_height)
+
+        contour_levels = np.linspace(0.15, 0.85, 6)
+        fill_value = np.nanmean(normalized[finite]) if finite.any() else 0.0
+        contour_source = np.nan_to_num(normalized, nan=fill_value)
+        source_height, source_width = contour_source.shape
+        if source_height > 1 and source_width > 1:
+            for level in contour_levels:
+                alpha = int(80 + 90 * level)
+                pen = QPen(QColor(15, 23, 42, alpha), 1)
+                painter.setPen(pen)
+                for contour in find_contours(contour_source, level):
+                    if len(contour) < 2:
+                        continue
+                    points = [
+                        QPointF(
+                            left + float(col) * plot_width / max(1, source_width - 1),
+                            top + (1.0 - float(row) / max(1, source_height - 1)) * plot_height,
+                        )
+                        for row, col in contour
+                    ]
+                    painter.drawPolyline(QPolygonF(points))
+
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor(30, 41, 59))
+        variable = self._machine_map_contour_variable.currentText()
+        title = f"{variable} parameter field"
+        painter.drawText(QRectF(left, 4, plot_width, 18), Qt.AlignmentFlag.AlignLeft, title)
+        painter.drawText(
+            QRectF(left, top + plot_height + 8, plot_width, 18),
+            Qt.AlignmentFlag.AlignCenter,
+            "Normalized base plate coordinate",
+        )
+
+        bar_values = np.linspace(1.0, 0.0, plot_height)[:, None]
+        bar_rgb = np.ascontiguousarray(
+            _workbench_colormap(np.repeat(bar_values, bar_width, axis=1))
+        )
+        bar_qimage = QImage(
+            bar_rgb.data,
+            bar_width,
+            plot_height,
+            bar_width * 3,
+            QImage.Format.Format_RGB888,
+        ).copy()
+        painter.drawImage(bar_left, top, bar_qimage)
+        painter.setPen(QPen(QColor(15, 23, 42), 1))
+        painter.drawRect(bar_left, top, bar_width, plot_height)
+        if finite.any():
+            painter.drawText(
+                QRectF(bar_left + 24, top - 5, 70, 18),
+                Qt.AlignmentFlag.AlignLeft,
+                f"{hi:.3g}",
+            )
+            painter.drawText(
+                QRectF(bar_left + 24, top + plot_height / 2 - 9, 70, 18),
+                Qt.AlignmentFlag.AlignLeft,
+                f"{((lo + hi) / 2):.3g}",
+            )
+            painter.drawText(
+                QRectF(bar_left + 24, top + plot_height - 13, 70, 18),
+                Qt.AlignmentFlag.AlignLeft,
+                f"{lo:.3g}",
+            )
+
         sample_x = self._machine_map_contour_data.get("_sample_x", [])
         sample_y = self._machine_map_contour_data.get("_sample_y", [])
-        for x_value, y_value in zip(sample_x, sample_y):
+        painter.setBrush(QColor(255, 255, 255, 230))
+        painter.setPen(QPen(QColor(15, 23, 42), 2))
+        for x_value, y_value in zip(sample_x, sample_y, strict=False):
             if not np.isfinite(x_value) or not np.isfinite(y_value):
                 continue
-            x = float(np.clip(x_value, 0.0, 1.0)) * (width - 1)
-            y = (1.0 - float(np.clip(y_value, 0.0, 1.0))) * (height - 1)
-            painter.drawEllipse(QPointF(x, y), 3.0, 3.0)
+            x = left + float(np.clip(x_value, 0.0, 1.0)) * plot_width
+            y = top + (1.0 - float(np.clip(y_value, 0.0, 1.0))) * plot_height
+            painter.drawEllipse(QPointF(x, y), 4.2, 4.2)
         painter.end()
         return pixmap
 
