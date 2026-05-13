@@ -1178,7 +1178,7 @@ class WorkbenchMainWindow:
             "ROI sample folder",
             self._file_row(self._calibration_sample_dir, self._browse_calibration_sample_dir),
         )
-        self._calibration_spacing = QLineEdit("0.1")
+        self._calibration_spacing = QLineEdit("0.07")
         input_form.addRow("Grid spacing (mm)", self._calibration_spacing)
         self._calibration_sample_filter = QLineEdit()
         input_form.addRow("Sample filter", self._calibration_sample_filter)
@@ -1571,10 +1571,22 @@ class WorkbenchMainWindow:
 
     def _default_calibration_geometry_path(self) -> Path:
         project_root = Path(__file__).resolve().parents[4]
-        path = project_root / "data" / "geometry_examples" / "4Calibration" / "3D_calibration.stl"
+        path = (
+            project_root
+            / "data"
+            / "geometry_examples"
+            / "KITECH_ARTIFACTS"
+            / "Test_artifact_ver.4.stl"
+        )
         if path.exists():
             return path
-        return Path("..") / "data" / "geometry_examples" / "4Calibration" / "3D_calibration.stl"
+        return (
+            Path("..")
+            / "data"
+            / "geometry_examples"
+            / "KITECH_ARTIFACTS"
+            / "Test_artifact_ver.4.stl"
+        )
 
     def _default_calibration_sample_dir(self) -> Path:
         project_root = Path(__file__).resolve().parents[4]
