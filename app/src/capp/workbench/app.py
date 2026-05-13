@@ -45,6 +45,102 @@ def _roi_overlay_rgb(target_array, simulated_array):
     return np.ascontiguousarray(rgb)
 
 
+def _roi_mask_rgb(mask_array, foreground=(35, 101, 158)):
+    import numpy as np
+
+    mask = np.asarray(mask_array, dtype=bool)
+    rgb = np.full((*mask.shape, 3), 248, dtype=np.uint8)
+    rgb[mask] = foreground
+    return np.ascontiguousarray(rgb)
+
+
+def _roi_grayscale_rgb(gray_array):
+    import numpy as np
+
+    gray = np.asarray(gray_array)
+    if gray.ndim > 2:
+        gray = gray[..., 0]
+    if gray.size == 0:
+        gray = np.zeros((1, 1), dtype=np.uint8)
+    gray = gray.astype(np.float64)
+    finite = np.isfinite(gray)
+    if finite.any():
+        lower = float(np.nanmin(gray[finite]))
+        upper = float(np.nanmax(gray[finite]))
+        if upper > lower:
+            gray = (gray - lower) * (255.0 / (upper - lower))
+    gray = np.clip(gray, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(np.repeat(gray[..., None], 3, axis=2))
+
+
+def _resize_array_nearest(array, shape: tuple[int, int]):
+    import numpy as np
+
+    values = np.asarray(array)
+    if values.ndim > 2:
+        values = values[..., 0]
+    if values.shape == shape:
+        return values
+    if values.size == 0 or shape[0] <= 0 or shape[1] <= 0:
+        return np.zeros(shape, dtype=values.dtype)
+    y_index = np.linspace(0, values.shape[0] - 1, shape[0]).round().astype(int)
+    x_index = np.linspace(0, values.shape[1] - 1, shape[1]).round().astype(int)
+    return values[np.ix_(y_index, x_index)]
+
+
+def _mask_outline(mask_array):
+    import numpy as np
+
+    mask = np.asarray(mask_array, dtype=bool)
+    if mask.size == 0:
+        return mask
+    padded = np.pad(mask, 1, mode="constant", constant_values=False)
+    eroded = (
+        padded[1:-1, 1:-1]
+        & padded[:-2, 1:-1]
+        & padded[2:, 1:-1]
+        & padded[1:-1, :-2]
+        & padded[1:-1, 2:]
+    )
+    return mask & ~eroded
+
+
+def _dilate_mask(mask_array, iterations: int = 1):
+    import numpy as np
+
+    mask = np.asarray(mask_array, dtype=bool)
+    for _ in range(max(0, int(iterations))):
+        padded = np.pad(mask, 1, mode="constant", constant_values=False)
+        mask = (
+            padded[1:-1, 1:-1]
+            | padded[:-2, 1:-1]
+            | padded[2:, 1:-1]
+            | padded[1:-1, :-2]
+            | padded[1:-1, 2:]
+        )
+    return mask
+
+
+def _roi_outline_rgb(target_array, simulated_array, background_array=None):
+    import numpy as np
+
+    target = np.asarray(target_array, dtype=bool)
+    simulated = np.asarray(simulated_array, dtype=bool)
+    if background_array is None:
+        rgb = np.full((*target.shape, 3), 248, dtype=np.uint8)
+    else:
+        rgb = _roi_grayscale_rgb(_resize_array_nearest(background_array, target.shape))
+        rgb = np.clip(rgb.astype(np.float64) * 0.76 + 38.0, 0, 255).astype(np.uint8)
+
+    target_outline = _dilate_mask(_mask_outline(target), iterations=1)
+    simulated_outline = _dilate_mask(_mask_outline(simulated), iterations=1)
+    both = target_outline & simulated_outline
+    rgb[target_outline] = (224, 132, 58)
+    rgb[simulated_outline] = (56, 116, 196)
+    rgb[both] = (62, 153, 101)
+    return np.ascontiguousarray(rgb)
+
+
 class _StlPreviewWorkerSignals(QObject):
     finished = Signal(str, object, int, float)
     failed = Signal(str, str)
@@ -1194,6 +1290,7 @@ class WorkbenchMainWindow:
             QProgressBar,
             QPushButton,
             QScrollArea,
+            QSizePolicy,
             QSpinBox,
             QSplitter,
             QVBoxLayout,
@@ -1379,12 +1476,16 @@ class WorkbenchMainWindow:
 
         right = QWidget()
         right.setObjectName("ViewerPane")
+        right.setMinimumWidth(0)
+        right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(3, 3, 3, 3)
         right_layout.setSpacing(3)
         right_layout.addWidget(self._page_title("Calibration Review"))
 
         comparison_box = QGroupBox("ROI Comparison")
+        comparison_box.setMinimumWidth(0)
+        comparison_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         comparison_layout = QVBoxLayout(comparison_box)
         comparison_layout.setContentsMargins(4, 4, 4, 4)
         comparison_layout.setSpacing(4)
@@ -1392,30 +1493,72 @@ class WorkbenchMainWindow:
         comparison_controls.setContentsMargins(0, 0, 0, 0)
         comparison_controls.setSpacing(4)
         self._calibration_comparison_sample = QComboBox()
+        self._calibration_comparison_sample.setMinimumContentsLength(12)
+        self._calibration_comparison_sample.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._calibration_comparison_sample.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self._calibration_comparison_sample.currentTextChanged.connect(
             self._refresh_calibration_overlay
         )
         self._calibration_comparison_axis = QComboBox()
         self._calibration_comparison_axis.addItems(["X ROI", "Y ROI"])
+        self._calibration_comparison_axis.setMinimumContentsLength(5)
+        self._calibration_comparison_axis.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._calibration_comparison_axis.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         self._calibration_comparison_axis.currentTextChanged.connect(
             self._refresh_calibration_overlay
         )
+        self._calibration_comparison_mode = QComboBox()
+        self._calibration_comparison_mode.addItems(
+            ["Overlay", "Outline", "Original + Outline", "Target Mask", "Simulated Mask"]
+        )
+        self._calibration_comparison_mode.setMinimumContentsLength(14)
+        self._calibration_comparison_mode.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._calibration_comparison_mode.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+        self._calibration_comparison_mode.currentTextChanged.connect(
+            self._refresh_calibration_overlay
+        )
         comparison_controls.addWidget(self._calibration_comparison_sample, 2)
-        comparison_controls.addWidget(self._calibration_comparison_axis, 1)
+        comparison_controls.addWidget(self._calibration_comparison_axis)
+        comparison_controls.addWidget(self._calibration_comparison_mode)
         comparison_layout.addLayout(comparison_controls)
         self._calibration_overlay_label = QLabel("Run Model Calibration to compare ROI images.")
         self._calibration_overlay_label.setObjectName("SliceView")
         self._calibration_overlay_label.setAlignment(self._Qt.AlignmentFlag.AlignCenter)
+        self._calibration_overlay_label.setMinimumSize(1, 280)
         self._calibration_overlay_label.setMinimumHeight(280)
+        self._calibration_overlay_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Expanding,
+        )
         comparison_layout.addWidget(self._calibration_overlay_label, 1)
         right_layout.addWidget(comparison_box, 1)
 
         contour_box = QGroupBox("Machine Map Contour")
+        contour_box.setMinimumWidth(0)
+        contour_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         contour_layout = QVBoxLayout(contour_box)
         contour_layout.setContentsMargins(4, 4, 4, 4)
         contour_layout.setSpacing(4)
         self._machine_map_contour_variable = QComboBox()
         self._machine_map_contour_variable.addItems(["NX", "PX", "NY", "PY", "EPS", "IDP"])
+        self._machine_map_contour_variable.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         self._machine_map_contour_variable.currentTextChanged.connect(
             self._refresh_machine_map_contour
         )
@@ -1423,7 +1566,12 @@ class WorkbenchMainWindow:
         self._machine_map_contour_label = QLabel("Generate or load a machine parameter map.")
         self._machine_map_contour_label.setObjectName("SliceView")
         self._machine_map_contour_label.setAlignment(self._Qt.AlignmentFlag.AlignCenter)
+        self._machine_map_contour_label.setMinimumSize(1, 260)
         self._machine_map_contour_label.setMinimumHeight(260)
+        self._machine_map_contour_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Expanding,
+        )
         contour_layout.addWidget(self._machine_map_contour_label, 1)
         right_layout.addWidget(contour_box, 1)
 
@@ -2410,15 +2558,31 @@ class WorkbenchMainWindow:
             target = target_by_sample.get(sample.sample)
             simulated_x = np.asarray(sample.best.simulated_x, dtype=bool)
             simulated_y = np.asarray(sample.best.simulated_y, dtype=bool)
-            if target is None:
-                target_x = np.zeros(simulated_x.shape, dtype=bool)
-                target_y = np.zeros(simulated_y.shape, dtype=bool)
-            else:
-                target_x = self._resize_mask_to_shape(target.roi_x, simulated_x.shape)
-                target_y = self._resize_mask_to_shape(target.roi_y, simulated_y.shape)
+            target_x_source = target.roi_x if target is not None else sample.best.target_x
+            target_y_source = target.roi_y if target is not None else sample.best.target_y
+            target_x_path = target.roi_x_path if target is not None else sample.best.target_x_path
+            target_y_path = target.roi_y_path if target is not None else sample.best.target_y_path
+            target_x = (
+                self._resize_mask_to_shape(target_x_source, simulated_x.shape)
+                if target_x_source is not None
+                else np.zeros(simulated_x.shape, dtype=bool)
+            )
+            target_y = (
+                self._resize_mask_to_shape(target_y_source, simulated_y.shape)
+                if target_y_source is not None
+                else np.zeros(simulated_y.shape, dtype=bool)
+            )
             comparison[sample.sample] = {
-                "X ROI": (target_x, simulated_x),
-                "Y ROI": (target_y, simulated_y),
+                "X ROI": {
+                    "target": target_x,
+                    "simulated": self._resize_mask_to_shape(simulated_x, target_x.shape),
+                    "original": self._read_roi_original_image(target_x_path, target_x.shape),
+                },
+                "Y ROI": {
+                    "target": target_y,
+                    "simulated": self._resize_mask_to_shape(simulated_y, target_y.shape),
+                    "original": self._read_roi_original_image(target_y_path, target_y.shape),
+                },
             }
         self._calibration_comparison_data = comparison
 
@@ -2440,27 +2604,59 @@ class WorkbenchMainWindow:
         x_index = np.linspace(0, array.shape[1] - 1, shape[1]).round().astype(int)
         return array[np.ix_(y_index, x_index)]
 
+    def _read_roi_original_image(self, path, shape: tuple[int, int]):
+        if path is None:
+            return None
+        try:
+            import numpy as np
+            from PIL import Image
+
+            with Image.open(path) as image:
+                array = np.asarray(image.convert("L"))
+            return _resize_array_nearest(array, shape)
+        except Exception as exc:
+            self._append_log(f"ROI original image load skipped: {exc}")
+            return None
+
     def _refresh_calibration_overlay(self, *_args) -> None:
         if not hasattr(self, "_calibration_overlay_label"):
             return
         sample = self._calibration_comparison_sample.currentText()
         axis = self._calibration_comparison_axis.currentText()
-        pair = self._calibration_comparison_data.get(sample, {}).get(axis)
-        if pair is None:
+        entry = self._calibration_comparison_data.get(sample, {}).get(axis)
+        if entry is None:
             self._calibration_overlay_source_pixmap = None
             self._calibration_overlay_label.clear()
             self._calibration_overlay_label.setText("Run Model Calibration to compare ROI images.")
             return
-        self._calibration_overlay_source_pixmap = self._roi_overlay_pixmap(*pair)
+        mode = (
+            self._calibration_comparison_mode.currentText()
+            if hasattr(self, "_calibration_comparison_mode")
+            else "Overlay"
+        )
+        self._calibration_overlay_source_pixmap = self._roi_comparison_pixmap(entry, mode)
         self._fit_calibration_overlay_pixmap()
 
-    def _roi_overlay_pixmap(self, target, simulated):
+    def _roi_comparison_pixmap(self, entry, mode: str):
         import numpy as np
         from PySide6.QtGui import QImage, QPixmap
 
-        target_array = np.asarray(target, dtype=bool)
-        simulated_array = self._resize_mask_to_shape(simulated, target_array.shape)
-        rgb = _roi_overlay_rgb(target_array, simulated_array)
+        target_array = np.asarray(entry["target"], dtype=bool)
+        simulated_array = self._resize_mask_to_shape(entry["simulated"], target_array.shape)
+        original_array = entry.get("original")
+        if mode == "Outline":
+            rgb = _roi_outline_rgb(target_array, simulated_array)
+        elif mode == "Original + Outline":
+            if original_array is None:
+                rgb = _roi_outline_rgb(target_array, simulated_array)
+            else:
+                rgb = _roi_outline_rgb(target_array, simulated_array, original_array)
+        elif mode == "Target Mask":
+            rgb = _roi_mask_rgb(target_array, foreground=(44, 120, 84))
+        elif mode == "Simulated Mask":
+            rgb = _roi_mask_rgb(simulated_array, foreground=(35, 101, 158))
+        else:
+            rgb = _roi_overlay_rgb(target_array, simulated_array)
         height, width, _ = rgb.shape
         qimage = QImage(
             rgb.data,
@@ -2474,9 +2670,12 @@ class WorkbenchMainWindow:
     def _fit_calibration_overlay_pixmap(self) -> None:
         if self._calibration_overlay_source_pixmap is None:
             return
+        target_size = self._calibration_overlay_label.contentsRect().size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            target_size = self._calibration_overlay_label.size()
         self._calibration_overlay_label.setPixmap(
             self._calibration_overlay_source_pixmap.scaled(
-                self._calibration_overlay_label.size(),
+                target_size,
                 self._Qt.AspectRatioMode.KeepAspectRatio,
                 self._Qt.TransformationMode.FastTransformation,
             )
@@ -2819,9 +3018,12 @@ class WorkbenchMainWindow:
     def _fit_machine_map_contour_pixmap(self) -> None:
         if self._machine_map_contour_source_pixmap is None:
             return
+        target_size = self._machine_map_contour_label.contentsRect().size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            target_size = self._machine_map_contour_label.size()
         self._machine_map_contour_label.setPixmap(
             self._machine_map_contour_source_pixmap.scaled(
-                self._machine_map_contour_label.size(),
+                target_size,
                 self._Qt.AspectRatioMode.KeepAspectRatio,
                 self._Qt.TransformationMode.SmoothTransformation,
             )
