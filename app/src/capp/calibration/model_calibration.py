@@ -33,6 +33,11 @@ from capp.solver.factory import create_solver
 
 ProgressCallback = Callable[[int, str], None]
 MODEL_CALIBRATION_OPTIMIZERS = ("adaptive_sobol", "sobol", "latin_hypercube")
+_SOLVER_LABELS = {
+    SolverBackend.CPU_REFERENCE: "PBF Standard",
+    SolverBackend.CPU_NATIVE: "PBF Direct",
+    SolverBackend.CUDA: "PBF X",
+}
 
 
 @dataclass(frozen=True)
@@ -1006,6 +1011,16 @@ def _run_model_calibration_shared_candidates(
         candidate_index: int,
         candidate: ModelCalibrationParameterSet,
     ) -> tuple[int, list[ModelCalibrationEvaluation], float, float, float]:
+        with completed_lock:
+            running_percent = int(completed * 100 / options.max_evaluations)
+        if progress_callback is not None:
+            progress_callback(
+                running_percent,
+                (
+                    f"Running candidate {candidate_index}/{options.max_evaluations} "
+                    f"with {_SOLVER_LABELS.get(options.backend, options.backend.value)}"
+                ),
+            )
         candidate_options = ModelCalibrationOptions(
             max_evaluations=options.max_evaluations,
             backend=options.backend,
