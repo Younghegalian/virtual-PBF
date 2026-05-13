@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from html import unescape
 import json
 import re
 import zipfile
@@ -14,11 +15,25 @@ import numpy as np
 from scipy.interpolate import RBFInterpolator
 
 from capp.calibration.rmc import RmcParameterSet
+from capp.domain import SolverParameters, VoxelGrid
 
 PARAMETER_NAMES = ("NX", "PX", "NY", "PY", "EPS", "IDP")
 _XLSX_NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 ProgressCallback = Callable[[int, str], None]
-ProgressCallback = Callable[[int, str], None]
+
+
+def apply_machine_parameter_map(
+    parameters: SolverParameters,
+    _grid: VoxelGrid,
+) -> SolverParameters:
+    """Return mapped solver parameters when a preset is available.
+
+    The restored strict snapshot keeps this hook so virtual printing can run
+    even when no machine-map preset is selected. Full spatial map application
+    can be reattached on top of this stable launch path.
+    """
+
+    return parameters
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,18 @@ class MachineMapExportResult:
     resolution: int
     sample_count: int
     elapsed_seconds: float
+    preset_name: str = "Machine Map"
+    voxel_spacing: float | None = None
+
+
+@dataclass(frozen=True)
+class MachineParameterMapMetadata:
+    path: Path
+    preset_name: str
+    voxel_spacing: float | None
+    resolution: int
+    sample_count: int
+    parameter_order: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -134,6 +161,8 @@ def generate_machine_parameter_map_from_files(
     coordinates_xlsx: str | Path,
     output_dir: str | Path,
     resolution: int = 200,
+    preset_name: str = "Machine Map",
+    voxel_spacing: float | None = None,
     normalizer: CoordinateNormalizer | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> MachineMapExportResult:
@@ -163,9 +192,11 @@ def generate_machine_parameter_map_from_files(
         parameters=rows,
         coordinates=coordinates,
         resolution=resolution,
+        preset_name=preset_name,
         weights_csv=weights_csv,
         coordinates_xlsx=coordinates_xlsx,
         elapsed_seconds=perf_counter() - started,
+        voxel_spacing=voxel_spacing,
     )
     if progress_callback is not None:
         progress_callback(100, f"Machine parameter map saved: {result.map_npz.name}")
@@ -186,13 +217,29 @@ def read_model_calibration_weights_csv(path: str | Path) -> list[MachineParamete
             rows.append(
                 MachineParameterRow(
                     sample=sample,
-                    parameters=ModelCalibrationParameterSet.from_sequence(values),
+                    parameters=RmcParameterSet.from_sequence(values),
                     loss=float(loss_text) if loss_text else None,
                 )
             )
     if not rows:
         raise ValueError(f"No model calibration rows found in {weights_path}")
     return rows
+
+
+def _fit_rbf_models(
+    points: np.ndarray,
+    values: np.ndarray,
+) -> dict[str, RBFInterpolator]:
+    return {
+        name: RBFInterpolator(
+            points,
+            values[:, index],
+            kernel="thin_plate_spline",
+            degree=1,
+            smoothing=0.0,
+        )
+        for index, name in enumerate(PARAMETER_NAMES)
+    }
 
 
 def save_machine_parameter_map_outputs(
@@ -273,11 +320,49 @@ def save_machine_parameter_map_outputs(
     )
 
 
+def read_machine_parameter_map_metadata(path: str | Path) -> MachineParameterMapMetadata:
+    map_path = Path(path)
+    metadata_path = map_path.with_suffix(".json")
+    if metadata_path.exists():
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        return MachineParameterMapMetadata(
+            path=map_path,
+            preset_name=str(payload.get("preset_name") or "Machine Map"),
+            voxel_spacing=payload.get("voxel_spacing"),
+            resolution=int(payload.get("resolution") or 0),
+            sample_count=int(payload.get("sample_count") or 0),
+            parameter_order=tuple(payload.get("parameter_order") or PARAMETER_NAMES),
+        )
+
+    with np.load(map_path, allow_pickle=False) as data:
+        preset = data["preset_name"][0] if "preset_name" in data.files else "Machine Map"
+        spacing = None
+        if "voxel_spacing" in data.files:
+            raw_spacing = float(data["voxel_spacing"][0])
+            if np.isfinite(raw_spacing):
+                spacing = raw_spacing
+        sample_count = int(data["sample_names"].shape[0]) if "sample_names" in data.files else 0
+        resolution = int(data["NX"].shape[0]) if "NX" in data.files else 0
+        order = tuple(str(name) for name in data["parameter_names"]) if "parameter_names" in data.files else PARAMETER_NAMES
+    return MachineParameterMapMetadata(
+        path=map_path,
+        preset_name=str(preset),
+        voxel_spacing=spacing,
+        resolution=resolution,
+        sample_count=sample_count,
+        parameter_order=order,
+    )
+
+
 def read_sample_coordinates_xlsx(path: str | Path) -> list[SampleCoordinate]:
     workbook = Path(path)
     with zipfile.ZipFile(workbook) as archive:
         shared_strings = _read_shared_strings(archive)
-        root = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        sheet_xml = archive.read("xl/worksheets/sheet1.xml")
+        try:
+            root = ElementTree.fromstring(sheet_xml)
+        except ImportError:
+            return _read_sample_coordinates_xlsx_text(sheet_xml, shared_strings)
 
     rows: list[dict[str, str]] = []
     for row in root.findall(".//a:sheetData/a:row", _XLSX_NS):
@@ -411,6 +496,12 @@ def _write_metadata_json(
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _preset_directory_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (name or "Machine Map").strip())
+    safe = safe.strip("._-")
+    return safe or "Machine_Map"
+
+
 def _csv_value(row: dict[str, str], key: str) -> str:
     value = row.get(key) or row.get(key.lower()) or row.get(key.upper()) or ""
     return value.strip().strip('"')
@@ -425,10 +516,50 @@ def _csv_float(row: dict[str, str], key: str) -> float:
 
 def _read_shared_strings(archive: zipfile.ZipFile) -> list[str]:
     try:
-        root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+        shared_xml = archive.read("xl/sharedStrings.xml")
     except KeyError:
         return []
+    try:
+        root = ElementTree.fromstring(shared_xml)
+    except ImportError:
+        text = shared_xml.decode("utf-8", errors="replace")
+        return [
+            unescape("".join(re.findall(r"<a?:?t[^>]*>(.*?)</a?:?t>", item, flags=re.S)))
+            for item in re.findall(r"<a?:?si[^>]*>(.*?)</a?:?si>", text, flags=re.S)
+        ]
     return [
         "".join(text.text or "" for text in item.findall(".//a:t", _XLSX_NS))
         for item in root.findall("a:si", _XLSX_NS)
     ]
+
+
+def _read_sample_coordinates_xlsx_text(
+    sheet_xml: bytes,
+    shared_strings: list[str],
+) -> list[SampleCoordinate]:
+    text = sheet_xml.decode("utf-8", errors="replace")
+    rows: list[dict[str, str]] = []
+    for row_text in re.findall(r"<a?:?row\b[^>]*>(.*?)</a?:?row>", text, flags=re.S):
+        cells: dict[str, str] = {}
+        for cell_match in re.finditer(r"<a?:?c\b([^>]*)>(.*?)</a?:?c>", row_text, flags=re.S):
+            attrs, cell_text = cell_match.groups()
+            reference_match = re.search(r'\br="([A-Z]+)\d+"', attrs)
+            value_match = re.search(r"<a?:?v[^>]*>(.*?)</a?:?v>", cell_text, flags=re.S)
+            if reference_match is None or value_match is None:
+                continue
+            column = reference_match.group(1)
+            value = unescape(value_match.group(1).strip())
+            if re.search(r'\bt="s"', attrs):
+                value = shared_strings[int(value)]
+            cells[column] = value
+        rows.append(cells)
+
+    coordinates: list[SampleCoordinate] = []
+    for cells in rows[1:]:
+        sample = cells.get("A")
+        x_value = cells.get("B")
+        y_value = cells.get("C")
+        if sample is None or x_value is None or y_value is None:
+            continue
+        coordinates.append(SampleCoordinate(sample=sample, x=float(x_value), y=float(y_value)))
+    return coordinates

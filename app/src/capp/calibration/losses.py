@@ -229,3 +229,25 @@ def _diagnostic_loss_map(
     )
     return loss_map
 
+
+def _diagnostic_loss_map(
+    *,
+    target: NDArray[np.bool_],
+    simulated: NDArray[np.bool_],
+    target_perimeter: NDArray[np.bool_],
+    simulated_perimeter: NDArray[np.bool_],
+    distance_to_target: NDArray[np.float64],
+    distance_to_simulated: NDArray[np.float64],
+    radius: int,
+) -> NDArray[np.float64]:
+    loss_map = np.zeros_like(target, dtype=np.float64)
+    loss_map[target ^ simulated] = 1.0
+    loss_map[target_perimeter] = np.maximum(
+        loss_map[target_perimeter],
+        np.minimum(1.0, distance_to_simulated[target_perimeter] / radius),
+    )
+    loss_map[simulated_perimeter] = np.maximum(
+        loss_map[simulated_perimeter],
+        np.minimum(1.0, distance_to_target[simulated_perimeter] / radius),
+    )
+    return loss_map

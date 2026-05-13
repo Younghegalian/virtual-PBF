@@ -863,4 +863,3 @@ class PreviewPane:
 
         if edges.n_cells > 0:
             plotter.add_mesh(edges, color="#0f172a", line_width=1.9)
-

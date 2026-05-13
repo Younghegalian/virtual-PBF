@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-
 APP_NAME = "Virtual PBF Workbench"
 APP_ORGANIZATION = "Virtual PBF"
 APP_ID = "virtual-pbf.workbench"

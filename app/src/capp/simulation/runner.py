@@ -80,4 +80,3 @@ def save_default_outputs(
     )
     if progress_callback is not None:
         progress_callback(100, "Output save complete")
-

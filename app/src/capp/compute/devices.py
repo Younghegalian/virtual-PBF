@@ -142,6 +142,12 @@ def _run_hidden(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(args, **kwargs)
 
 
+def _run_hidden(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return subprocess.run(args, **kwargs)
+
+
 def _has_module(name: str) -> bool:
     return find_spec(name) is not None
 

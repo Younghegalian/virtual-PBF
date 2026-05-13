@@ -95,6 +95,8 @@ class ModelCalibrationTarget:
     roi_y: NDArray[np.bool_]
     roi_x_inverted: bool = False
     roi_y_inverted: bool = False
+    roi_x_path: Path | None = None
+    roi_y_path: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sample", self.sample.strip())
@@ -102,6 +104,10 @@ class ModelCalibrationTarget:
         object.__setattr__(self, "roi_y", np.asarray(self.roi_y, dtype=bool))
         object.__setattr__(self, "roi_x_inverted", bool(self.roi_x_inverted))
         object.__setattr__(self, "roi_y_inverted", bool(self.roi_y_inverted))
+        if self.roi_x_path is not None:
+            object.__setattr__(self, "roi_x_path", Path(self.roi_x_path))
+        if self.roi_y_path is not None:
+            object.__setattr__(self, "roi_y_path", Path(self.roi_y_path))
         if self.roi_x.ndim != 2 or self.roi_y.ndim != 2:
             raise ValueError("Model calibration target ROIs must be 2D masks.")
 
@@ -115,6 +121,7 @@ class ModelCalibrationOptions:
     boundary_radius: int = 15
     max_workers: int = 1
     optimizer: str = "adaptive_sobol"
+    save_research_artifacts: bool = False
 
     def __post_init__(self) -> None:
         if self.max_evaluations < 1:
@@ -127,6 +134,7 @@ class ModelCalibrationOptions:
             choices = ", ".join(MODEL_CALIBRATION_OPTIMIZERS)
             raise ValueError(f"optimizer must be one of: {choices}.")
         object.__setattr__(self, "optimizer", optimizer)
+        object.__setattr__(self, "save_research_artifacts", bool(self.save_research_artifacts))
 
 
 @dataclass(frozen=True)
@@ -140,6 +148,10 @@ class ModelCalibrationEvaluation:
     solver_seconds: float = 0.0
     roi_seconds: float = 0.0
     loss_seconds: float = 0.0
+    target_x: NDArray[np.bool_] | None = None
+    target_y: NDArray[np.bool_] | None = None
+    target_x_path: Path | None = None
+    target_y_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +229,8 @@ def discover_model_calibration_targets(
                 roi_y=roi_y,
                 roi_x_inverted=roi_x_inverted,
                 roi_y_inverted=roi_y_inverted,
+                roi_x_path=x_path,
+                roi_y_path=y_path,
             )
         )
 
@@ -266,6 +280,10 @@ def evaluate_model_calibration_candidate(
         solver_seconds=solver_seconds,
         roi_seconds=roi_seconds,
         loss_seconds=loss_seconds,
+        target_x=target.roi_x,
+        target_y=target.roi_y,
+        target_x_path=target.roi_x_path,
+        target_y_path=target.roi_y_path,
     )
 
 
@@ -489,6 +507,10 @@ def run_model_calibration_from_paths(
 def save_model_calibration_outputs(
     output_dir: str | Path,
     result: ModelCalibrationRunResult,
+    *,
+    save_research_artifacts: bool = False,
+    include_volume_arrays: bool = False,
+    calibration_geometry_path: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     folder = Path(output_dir)
@@ -499,11 +521,44 @@ def save_model_calibration_outputs(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["Sample", "param1", "param2", "param3", "param4", "param5", "param6", "Loss"]
+            [
+                "Sample",
+                "param1",
+                "param2",
+                "param3",
+                "param4",
+                "param5",
+                "param6",
+                "Loss",
+                "DiceX",
+                "DiceY",
+                "IoUX",
+                "IoUY",
+                "OverlapLossX",
+                "OverlapLossY",
+                "BoundaryLossX",
+                "BoundaryLossY",
+                "AreaLossX",
+                "AreaLossY",
+            ]
         )
         for sample in result.samples:
             writer.writerow(
-                [sample.sample, *sample.best.parameters.as_tuple(), sample.best.loss.total]
+                [
+                    sample.sample,
+                    *sample.best.parameters.as_tuple(),
+                    sample.best.loss.total,
+                    sample.best.loss.x_dice,
+                    sample.best.loss.y_dice,
+                    sample.best.loss.x_iou,
+                    sample.best.loss.y_iou,
+                    sample.best.loss.x_overlap_loss,
+                    sample.best.loss.y_overlap_loss,
+                    sample.best.loss.x_boundary_loss,
+                    sample.best.loss.y_boundary_loss,
+                    sample.best.loss.x_area_loss,
+                    sample.best.loss.y_area_loss,
+                ]
             )
 
     total_samples = max(1, len(result.samples))
@@ -513,18 +568,187 @@ def save_model_calibration_outputs(
                 98 + int(index * 2 / total_samples),
                 f"Writing artifacts for {sample.sample}",
             )
+        simulation = sample.best.result
+        artifact_payload = {
+            "simulated_x": sample.best.simulated_x.astype(np.uint8),
+            "simulated_y": sample.best.simulated_y.astype(np.uint8),
+            "loss_x": sample.best.loss.x_map,
+            "loss_y": sample.best.loss.y_map,
+            "parameters": np.asarray(sample.best.parameters.as_tuple(), dtype=np.float64),
+            "loss": np.asarray([sample.best.loss.total], dtype=np.float64),
+            "loss_components": np.asarray(
+                [
+                    sample.best.loss.x_overlap_loss,
+                    sample.best.loss.y_overlap_loss,
+                    sample.best.loss.x_boundary_loss,
+                    sample.best.loss.y_boundary_loss,
+                    sample.best.loss.x_area_loss,
+                    sample.best.loss.y_area_loss,
+                    sample.best.loss.x_dice,
+                    sample.best.loss.y_dice,
+                    sample.best.loss.x_iou,
+                    sample.best.loss.y_iou,
+                ],
+                dtype=np.float64,
+            ),
+            "volume_shape": np.asarray(simulation.probability.shape, dtype=np.int64),
+            "spacing": np.asarray([simulation.spacing], dtype=np.float64),
+            "origin": np.asarray(simulation.origin, dtype=np.float64),
+            "rest_volume": np.asarray([simulation.rest_volume], dtype=np.float64),
+            "probability_density": np.asarray([simulation.probability_density], dtype=np.float64),
+            "binary_voxels": np.asarray([np.count_nonzero(simulation.binary)], dtype=np.int64),
+            "input_voxels": np.asarray([np.count_nonzero(simulation.voxel)], dtype=np.int64),
+        }
+        if include_volume_arrays:
+            artifact_payload.update(
+                {
+                    "probability": simulation.probability,
+                    "binary": simulation.binary.astype(np.uint8),
+                    "voxel": simulation.voxel.astype(np.uint8),
+                }
+            )
+        if sample.best.target_x is not None:
+            artifact_payload["target_x"] = sample.best.target_x.astype(np.uint8)
+        if sample.best.target_y is not None:
+            artifact_payload["target_y"] = sample.best.target_y.astype(np.uint8)
         np.savez_compressed(
             folder / f"{sample.sample}_model_calibration_artifacts.npz",
-            simulated_x=sample.best.simulated_x.astype(np.uint8),
-            simulated_y=sample.best.simulated_y.astype(np.uint8),
-            loss_x=sample.best.loss.x_map,
-            loss_y=sample.best.loss.y_map,
-            probability=sample.best.result.probability,
-            binary=sample.best.result.binary.astype(np.uint8),
-            voxel=sample.best.result.voxel.astype(np.uint8),
-            parameters=np.asarray(sample.best.parameters.as_tuple(), dtype=np.float64),
-            loss=np.asarray([sample.best.loss.total], dtype=np.float64),
+            **artifact_payload,
         )
+    if save_research_artifacts:
+        export_model_calibration_research_artifacts(
+            folder,
+            result,
+            calibration_geometry_path=calibration_geometry_path,
+        )
+
+
+def export_model_calibration_research_artifacts(
+    output_dir: str | Path,
+    result: ModelCalibrationRunResult,
+    *,
+    calibration_geometry_path: str | Path | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> Path:
+    folder = Path(output_dir)
+    total_samples = max(1, len(result.samples))
+    for index, sample in enumerate(result.samples, start=1):
+        base = int((index - 1) * 100 / total_samples)
+        limit = int(index * 100 / total_samples)
+
+        def sample_progress(
+            fraction: float,
+            message: str,
+            *,
+            progress_base: int = base,
+            progress_limit: int = limit,
+            sample_name: str = sample.sample,
+        ) -> None:
+            if progress_callback is None:
+                return
+            span = progress_limit - progress_base
+            percent = progress_base + int(span * max(0.0, min(1.0, fraction)))
+            progress_callback(percent, f"{sample_name}: {message}")
+
+        if progress_callback is not None:
+            progress_callback(
+                base,
+                f"{sample.sample}: exporting research artifacts",
+            )
+        _save_model_calibration_research_artifacts(
+            folder,
+            sample,
+            calibration_geometry_path=calibration_geometry_path,
+            progress_callback=sample_progress,
+        )
+    return folder / "research_artifacts"
+
+
+def _save_model_calibration_research_artifacts(
+    output_dir: Path,
+    sample: ModelCalibrationSampleResult,
+    *,
+    calibration_geometry_path: str | Path | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> None:
+    sample_dir = output_dir / "research_artifacts" / _safe_sample_name(sample.sample)
+    roi_dir = sample_dir / "roi"
+    geometry_dir = sample_dir / "geometry"
+    roi_dir.mkdir(parents=True, exist_ok=True)
+    geometry_dir.mkdir(parents=True, exist_ok=True)
+
+    best = sample.best
+    _emit_export_progress(progress_callback, 0.05, "writing ROI masks")
+    _copy_if_available(best.target_x_path, roi_dir / "target_x_original.tif")
+    _copy_if_available(best.target_y_path, roi_dir / "target_y_original.tif")
+    if best.target_x is not None:
+        _write_mask_tiff(roi_dir / "target_x_mask.tif", best.target_x)
+    if best.target_y is not None:
+        _write_mask_tiff(roi_dir / "target_y_mask.tif", best.target_y)
+    _write_mask_tiff(roi_dir / "simulated_x_mask.tif", best.simulated_x)
+    _write_mask_tiff(roi_dir / "simulated_y_mask.tif", best.simulated_y)
+
+    if calibration_geometry_path is not None:
+        source_geometry = Path(calibration_geometry_path)
+        if source_geometry.exists():
+            _emit_export_progress(progress_callback, 0.12, "copying input geometry")
+            _copy_if_available(source_geometry, geometry_dir / f"input{source_geometry.suffix}")
+
+    result = best.result
+    _emit_export_progress(progress_callback, 0.2, "writing probability volume")
+    write_vtk_volume(
+        geometry_dir / "best_probability.vtk",
+        result.probability,
+        spacing=result.spacing,
+        origin=result.origin,
+        scalar_name="Probability",
+    )
+    _emit_export_progress(progress_callback, 0.5, "writing binary volume")
+    write_vtk_volume(
+        geometry_dir / "best_binary.vtk",
+        result.binary.astype(np.uint8),
+        spacing=result.spacing,
+        origin=result.origin,
+        scalar_name="Binary",
+    )
+    _emit_export_progress(progress_callback, 0.75, "writing STL surface")
+    write_binary_stl(
+        geometry_dir / "best_binary.stl",
+        result.binary,
+        spacing=result.spacing,
+        origin=result.origin,
+    )
+    _emit_export_progress(progress_callback, 1.0, "research artifacts exported")
+
+
+def _emit_export_progress(
+    progress_callback: Callable[[float, str], None] | None,
+    fraction: float,
+    message: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(fraction, message)
+
+
+def _copy_if_available(source: str | Path | None, destination: Path) -> None:
+    if source is None:
+        return
+    source_path = Path(source)
+    if source_path.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        copy2(source_path, destination)
+
+
+def _write_mask_tiff(path: Path, mask: NDArray[np.bool_]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.asarray(mask, dtype=np.uint8) * 255).save(path)
+
+
+def _safe_sample_name(sample: str) -> str:
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", sample.strip())
+    value = re.sub(r"\s+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("._ ")
+    return value or "sample"
 
 
 def _candidate_sequence(options: ModelCalibrationOptions) -> list[ModelCalibrationParameterSet]:
@@ -812,6 +1036,8 @@ def _run_model_calibration_shared_candidates(
                     solver_seconds=solver_seconds,
                     roi_seconds=roi_seconds,
                     loss_seconds=target_loss_seconds,
+                    target_x=target.roi_x,
+                    target_y=target.roi_y,
                 )
             )
         return candidate_index, evaluations, solver_seconds, roi_seconds, loss_seconds

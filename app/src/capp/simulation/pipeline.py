@@ -83,4 +83,3 @@ def _scale_progress(
         callback(value, message or fallback_message)
 
     return scaled
-

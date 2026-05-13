@@ -83,4 +83,3 @@ def test_lower_layer_growth_is_gated_by_current_cad_voxel():
     )
 
     assert updated[0, 0] == 0.0
-

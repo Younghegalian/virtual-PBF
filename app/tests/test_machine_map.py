@@ -10,6 +10,8 @@ from capp.machine_map import (
     MachineParameterMap,
     MachineParameterRow,
     SampleCoordinate,
+    generate_machine_parameter_map_from_files,
+    read_model_calibration_weights_csv,
     read_sample_coordinates_xlsx,
 )
 
@@ -80,6 +82,58 @@ def test_machine_parameter_map_requires_coordinate_for_each_sample():
 
     with pytest.raises(ValueError, match="Missing coordinates"):
         MachineParameterMap.fit(rows, [])
+
+
+def test_read_model_calibration_weights_csv_reads_parameter_rows(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    _write_minimal_weights_csv(weights)
+
+    rows = read_model_calibration_weights_csv(weights)
+
+    assert [row.sample for row in rows] == ["A1", "A2", "B1"]
+    assert rows[0].parameters.as_tuple() == (0.1, 0.2, 0.3, 0.4, 0.01, 0.2)
+    assert rows[0].loss == 1.5
+
+
+def test_generate_machine_parameter_map_from_files_writes_solver_ready_outputs(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    coordinates = tmp_path / "sp_coordinates.xlsx"
+    output_dir = tmp_path / "map"
+    _write_minimal_weights_csv(weights)
+    _write_minimal_coordinates_xlsx(coordinates)
+
+    result = generate_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates,
+        output_dir=output_dir,
+        resolution=9,
+    )
+
+    assert result.sample_count == 3
+    assert result.map_npz.exists()
+    assert result.grid_csv.exists()
+    assert result.sample_csv.exists()
+    assert result.metadata_json.exists()
+    payload = np.load(result.map_npz)
+    assert payload["NX"].shape == (9, 9)
+    assert payload["sample_parameters"].shape == (3, 6)
+    assert "virtual_pbf.machine_parameter_map.v1" in result.metadata_json.read_text(
+        encoding="utf-8"
+    )
+
+
+def _write_minimal_weights_csv(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "Sample,param1,param2,param3,param4,param5,param6,Loss",
+                "A1,0.1,0.2,0.3,0.4,0.01,0.2,1.5",
+                "A2,0.2,0.3,0.4,0.5,0.02,0.3,1.2",
+                "B1,0.3,0.4,0.5,0.6,0.03,0.4,0.9",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_minimal_coordinates_xlsx(path: Path) -> None:

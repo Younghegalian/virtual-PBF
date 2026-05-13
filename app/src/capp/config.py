@@ -102,4 +102,3 @@ def _tuple_or_scalar(value: Any) -> float | tuple[float, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(float(v) for v in value)
     return float(value)
-

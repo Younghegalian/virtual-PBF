@@ -184,4 +184,3 @@ class SimulationResult:
         object.__setattr__(self, "probability", self.probability.astype(np.uint8, copy=False))
         object.__setattr__(self, "binary", self.binary.astype(bool, copy=False))
         object.__setattr__(self, "voxel", self.voxel.astype(bool, copy=False))
-

@@ -222,6 +222,12 @@ def _has_initial_deviation(parameters: SolverParameters) -> bool:
     return parameters.initial_deviation > 0.0
 
 
+def _has_initial_deviation(parameters: SolverParameters) -> bool:
+    if parameters.spatial_initial_deviation is not None:
+        return bool(np.any(parameters.spatial_initial_deviation > 0.0))
+    return parameters.initial_deviation > 0.0
+
+
 def _update_von_neumann_layer(
     probability: NDArray[np.float32],
     voxel_calc: NDArray[np.float32],
@@ -291,4 +297,3 @@ def _postprocess_binary(
     filtered = remove_small_components(binary, min_size=50, connectivity=1)
     cropped = filtered[1 : x_size + 1, 1 : y_size + 1, 1 : z_size + 1]
     return remove_small_components(cropped, min_size=50, connectivity=1)
-

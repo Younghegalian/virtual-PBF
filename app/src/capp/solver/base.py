@@ -16,4 +16,3 @@ class PrintSolver(Protocol):
         progress_callback: ProgressCallback | None = None,
     ) -> SimulationResult:
         """Run a print simulation against a voxel grid."""
-
