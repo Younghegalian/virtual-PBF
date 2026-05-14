@@ -344,6 +344,7 @@ def _fit_rbf_models(
 def save_machine_parameter_map_outputs(
     *,
     output_dir: str | Path,
+    preset_folder: str | Path | None = None,
     model: MachineParameterMap,
     grid: dict[str, np.ndarray],
     parameters: list[MachineParameterRow],
@@ -356,7 +357,11 @@ def save_machine_parameter_map_outputs(
     voxel_spacing: float | None = None,
     run_configuration: dict[str, object] | None = None,
 ) -> MachineMapExportResult:
-    effective_preset_name, folder = _unique_preset_folder(Path(output_dir), preset_name)
+    if preset_folder is None:
+        effective_preset_name, folder = _unique_preset_folder(Path(output_dir), preset_name)
+    else:
+        effective_preset_name = (preset_name or "Machine Map").strip() or "Machine Map"
+        folder = Path(preset_folder)
     folder.mkdir(parents=True, exist_ok=True)
     map_npz = folder / "machine_parameter_map.npz"
     grid_csv = folder / "machine_parameter_grid.csv"

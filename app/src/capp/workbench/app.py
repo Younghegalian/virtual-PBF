@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+
+
+def _preset_directory_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (name or "Machine Map").strip())
+    safe = safe.strip("._-")
+    return safe or "Machine_Map"
+
+
+def _default_machine_preset_library_root() -> Path:
+    return Path("workbench_library") / "machine_presets"
+
+
+def _legacy_model_calibration_root() -> Path:
+    return Path("examples") / "outputs" / "model_calibration"
+
+
+def _intermediate_model_calibration_root() -> Path:
+    return Path("workbench_library") / "model_calibration"
+
+
+def _machine_preset_folder(library_root: str | Path, preset_name: str) -> Path:
+    return Path(library_root) / _preset_directory_name(preset_name)
+
+
+def _model_calibration_preset_output_dir(library_root: str | Path, preset_name: str) -> Path:
+    return _machine_preset_folder(library_root, preset_name) / "calibration"
+
+
+def _machine_map_preset_output_dir(library_root: str | Path, preset_name: str) -> Path:
+    return _machine_preset_folder(library_root, preset_name) / "map"
 
 
 def _workbench_colormap(values):
@@ -481,9 +512,16 @@ class _SaveMachineMapWorkerSignals(QObject):
 
 
 class _SaveMachineMapWorker(QRunnable):
-    def __init__(self, output_dir: str, result, run_configuration) -> None:
+    def __init__(
+        self,
+        output_dir: str,
+        preset_folder: str,
+        result,
+        run_configuration,
+    ) -> None:
         super().__init__()
         self.output_dir = output_dir
+        self.preset_folder = preset_folder
         self.result = result
         self.run_configuration = run_configuration
         self.signals = _SaveMachineMapWorkerSignals()
@@ -496,6 +534,7 @@ class _SaveMachineMapWorker(QRunnable):
             self.signals.progress.emit(0, "Writing machine parameter map")
             saved = save_machine_parameter_map_outputs(
                 output_dir=self.output_dir,
+                preset_folder=self.preset_folder,
                 model=self.result.model,
                 grid=self.result.grid,
                 parameters=self.result.parameters,
@@ -1241,8 +1280,8 @@ class WorkbenchMainWindow:
         process_form.addRow("Stochastic process", self._stochastic_mode)
 
         self._machine_preset = QComboBox()
-        self._machine_preset.addItems(["None", "Machine Map"])
-        self._machine_preset.currentTextChanged.connect(self._update_machine_preset_controls)
+        self._machine_preset.addItem("None", None)
+        self._machine_preset.currentIndexChanged.connect(self._update_machine_preset_controls)
         process_form.addRow("Machine preset", self._machine_preset)
 
         self._machine_map_path = QLineEdit(str(self._default_machine_map_path()))
@@ -1302,8 +1341,7 @@ class WorkbenchMainWindow:
             map_bounds_row.addWidget(widget)
         process_form.addRow("Map bounds (mm)", map_bounds_row)
         self._update_machine_map_coordinate_fields()
-        self._machine_map_path.editingFinished.connect(self._refresh_machine_map_name)
-        self._refresh_machine_map_name()
+        self._machine_map_path.editingFinished.connect(self._machine_map_path_edited)
         self._machine_preset_locked_widgets = [
             self._grid_spacing,
             self._estimate_spacing_button,
@@ -1324,6 +1362,8 @@ class WorkbenchMainWindow:
             self._idp,
             self._stochastic_mode,
         ]
+        self._refresh_machine_preset_list(select_path=self._default_machine_map_path())
+        self._refresh_machine_map_name()
         self._update_machine_preset_controls()
 
         self._processor = QComboBox()
@@ -1608,9 +1648,12 @@ class WorkbenchMainWindow:
         input_form.addRow("Grid spacing (mm)", self._calibration_spacing)
         self._calibration_sample_filter = QLineEdit()
         input_form.addRow("Sample filter", self._calibration_sample_filter)
-        self._calibration_output_dir = QLineEdit("examples/outputs/model_calibration")
+        self._calibration_output_dir = QLineEdit(str(_default_machine_preset_library_root()))
+        self._calibration_output_dir.editingFinished.connect(
+            lambda: self._refresh_machine_preset_list(preserve_current=False)
+        )
         input_form.addRow(
-            "Output dir",
+            "Preset library",
             self._file_row(self._calibration_output_dir, self._browse_calibration_output_dir),
         )
         left_layout.addWidget(input_box)
@@ -1944,14 +1987,14 @@ class WorkbenchMainWindow:
             ),
         )
 
-        calibration_output = QLineEdit(defaults["calibration_output_dir"])
-        self._preference_fields["calibration_output_dir"] = calibration_output
+        preset_library = QLineEdit(defaults["calibration_output_dir"])
+        self._preference_fields["calibration_output_dir"] = preset_library
         path_form.addRow(
-            "Calibration output dir",
+            "Preset library",
             self._file_row(
-                calibration_output,
+                preset_library,
                 lambda: self._browse_preference_dir(
-                    calibration_output, "Select default calibration output directory"
+                    preset_library, "Select default machine preset library"
                 ),
             ),
         )
@@ -2094,7 +2137,7 @@ class WorkbenchMainWindow:
         return {
             "interface_theme": "workbench_light",
             "simulation_output_dir": "examples/outputs/gui_simulation",
-            "calibration_output_dir": "examples/outputs/model_calibration",
+            "calibration_output_dir": str(_default_machine_preset_library_root()),
             "calibration_geometry": str(self._default_calibration_geometry_path()),
             "calibration_sample_dir": str(self._default_calibration_sample_dir()),
             "calibration_spacing": "0.07",
@@ -2109,12 +2152,51 @@ class WorkbenchMainWindow:
     def _preference_key(self, key: str) -> str:
         return f"preferences/{key}"
 
+    def _legacy_default_machine_map_path(self) -> Path:
+        return (
+            _legacy_model_calibration_root()
+            / "machine_presets"
+            / "Machine_Map"
+            / "machine_parameter_map.npz"
+        )
+
+    def _intermediate_default_machine_map_path(self) -> Path:
+        return (
+            _intermediate_model_calibration_root()
+            / "machine_presets"
+            / "Machine_Map"
+            / "machine_parameter_map.npz"
+        )
+
+    def _migrate_preference_value(self, key: str, value: str, default: str) -> str:
+        normalized = Path(value).as_posix().rstrip("/")
+
+        def matches_path(path: Path) -> bool:
+            legacy = path.as_posix().rstrip("/")
+            return normalized == legacy or normalized.endswith(f"/{legacy}")
+
+        if key == "calibration_output_dir":
+            if matches_path(_legacy_model_calibration_root()) or matches_path(
+                _intermediate_model_calibration_root()
+            ):
+                return default
+        if key == "machine_map_path":
+            if matches_path(self._legacy_default_machine_map_path()) or matches_path(
+                self._intermediate_default_machine_map_path()
+            ):
+                return default
+        return value
+
     def _preference_values_from_settings(self) -> dict[str, str]:
         defaults = self._preference_defaults()
         values = {}
         for key, default in defaults.items():
             value = self._settings.value(self._preference_key(key), default)
-            values[key] = default if value is None else str(value)
+            values[key] = (
+                default
+                if value is None
+                else self._migrate_preference_value(key, str(value), default)
+            )
         return values
 
     def _preference_widget_value(self, widget) -> str:
@@ -2221,7 +2303,8 @@ class WorkbenchMainWindow:
         self._set_line_edit_if_present(
             "_machine_map_coordinates", values.get("machine_coordinate_workbook", "")
         )
-        self._set_line_edit_if_present("_machine_map_path", values.get("machine_map_path", ""))
+        machine_map_path = values.get("machine_map_path", "")
+        self._set_line_edit_if_present("_machine_map_path", machine_map_path)
         self._set_line_edit_if_present("_machine_map_name", values.get("machine_map_name", ""))
 
         if hasattr(self, "_calibration_optimizer"):
@@ -2236,7 +2319,12 @@ class WorkbenchMainWindow:
             "_calibration_parallel_samples",
             values.get("calibration_parallel_samples", str(self._recommended_parallel_samples())),
         )
-        if hasattr(self, "_refresh_machine_map_name"):
+        if hasattr(self, "_refresh_machine_preset_list"):
+            self._refresh_machine_preset_list(
+                select_path=Path(machine_map_path) if machine_map_path else None,
+                preserve_current=False,
+            )
+        elif hasattr(self, "_refresh_machine_map_name"):
             self._refresh_machine_map_name()
         if hasattr(self, "_update_machine_preset_controls"):
             self._update_machine_preset_controls()
@@ -2320,12 +2408,121 @@ class WorkbenchMainWindow:
     def _browse_calibration_output_dir(self) -> None:
         path = self._QFileDialog.getExistingDirectory(
             self._window,
-            "Select Model Calibration output directory",
+            "Select machine preset library",
             str(Path.cwd()),
         )
         if path:
             self._calibration_output_dir.setText(path)
-            self._append_log(f"Model Calibration output directory selected: {path}")
+            self._refresh_machine_preset_list(preserve_current=False)
+            self._append_log(f"Machine preset library selected: {path}")
+
+    def _calibration_output_root(self) -> Path:
+        widget = getattr(self, "_calibration_output_dir", None)
+        text = widget.text().strip() if widget is not None else ""
+        return Path(text or _default_machine_preset_library_root())
+
+    def _machine_preset_root(self) -> Path:
+        return self._calibration_output_root()
+
+    def _path_match_key(self, path: str | Path) -> str:
+        try:
+            return str(Path(path).resolve()).casefold()
+        except Exception:
+            return str(Path(path)).casefold()
+
+    def _read_machine_map_metadata(self, path: str | Path):
+        from capp.machine_map import read_machine_parameter_map_metadata
+
+        return read_machine_parameter_map_metadata(path)
+
+    def _machine_map_detail_label(self, metadata) -> str:
+        label = metadata.preset_name
+        if metadata.voxel_spacing is not None:
+            label = f"{label} ({metadata.voxel_spacing:g} mm)"
+        return label
+
+    def _discover_machine_map_presets(self) -> list[tuple[str, Path]]:
+        root = self._machine_preset_root()
+        if not root.exists():
+            return []
+        presets: list[tuple[str, Path]] = []
+        paths = list(root.glob("*/map/machine_parameter_map.npz"))
+        paths.extend(root.glob("*/machine_parameter_map.npz"))
+        for path in sorted(set(paths)):
+            try:
+                metadata = self._read_machine_map_metadata(path)
+            except Exception:
+                continue
+            presets.append((metadata.preset_name, path))
+        return presets
+
+    def _selected_machine_map_path(self) -> Path | None:
+        if not hasattr(self, "_machine_preset"):
+            return None
+        data = self._machine_preset.currentData()
+        if not data:
+            return None
+        return Path(str(data))
+
+    def _sync_machine_map_path_from_preset(self) -> None:
+        if not hasattr(self, "_machine_map_path"):
+            return
+        path = self._selected_machine_map_path()
+        self._machine_map_path.setText("" if path is None else str(path))
+
+    def _refresh_machine_preset_list(
+        self,
+        select_path: str | Path | None = None,
+        *,
+        preserve_current: bool = True,
+        load_contour: bool = False,
+    ) -> None:
+        if not hasattr(self, "_machine_preset"):
+            return
+        target_path = Path(select_path) if select_path else None
+        if target_path is None and preserve_current:
+            target_path = self._selected_machine_map_path()
+            if target_path is None and hasattr(self, "_machine_map_path"):
+                text = self._machine_map_path.text().strip()
+                target_path = Path(text) if text else None
+
+        target_key = self._path_match_key(target_path) if target_path is not None else ""
+        self._machine_preset.blockSignals(True)
+        self._machine_preset.clear()
+        self._machine_preset.addItem("None", None)
+        selected_index = 0
+        known_paths: set[str] = set()
+        for label, path in self._discover_machine_map_presets():
+            key = self._path_match_key(path)
+            known_paths.add(key)
+            self._machine_preset.addItem(label, str(path))
+            if target_key and key == target_key:
+                selected_index = self._machine_preset.count() - 1
+
+        if (
+            target_path is not None
+            and target_path.exists()
+            and target_key
+            and target_key not in known_paths
+        ):
+            try:
+                metadata = self._read_machine_map_metadata(target_path)
+                label = metadata.preset_name
+            except Exception:
+                label = target_path.stem
+            self._machine_preset.addItem(label, str(target_path))
+            selected_index = self._machine_preset.count() - 1
+
+        self._machine_preset.setCurrentIndex(selected_index)
+        self._machine_preset.blockSignals(False)
+        self._sync_machine_map_path_from_preset()
+        self._refresh_machine_map_name(load_contour=load_contour)
+        if hasattr(self, "_machine_preset_locked_widgets"):
+            self._update_machine_preset_controls()
+
+    def _machine_map_path_edited(self) -> None:
+        text = self._machine_map_path.text().strip()
+        self._refresh_machine_preset_list(select_path=Path(text) if text else None)
 
     def _browse_machine_map_coordinates(self) -> None:
         path = self._open_file(
@@ -2343,15 +2540,11 @@ class WorkbenchMainWindow:
         )
         if path:
             self._machine_map_path.setText(path)
-            self._machine_preset.setCurrentText("Machine Map")
-            self._refresh_machine_map_name(load_contour=True)
+            self._refresh_machine_preset_list(select_path=Path(path), load_contour=True)
             self._append_log(f"Machine parameter map selected: {path}")
 
     def _update_machine_map_coordinate_fields(self) -> None:
-        machine_map_active = (
-            hasattr(self, "_machine_preset")
-            and self._machine_preset.currentText() == "Machine Map"
-        )
+        machine_map_active = self._selected_machine_map_path() is not None
         if hasattr(self, "_machine_map_coordinate_mode"):
             self._machine_map_coordinate_mode.setEnabled(machine_map_active)
         coordinate_mode = (
@@ -2367,23 +2560,21 @@ class WorkbenchMainWindow:
             widget.setEnabled(bounds_mode)
 
     def _refresh_machine_map_name(self, *, load_contour: bool = False) -> None:
-        text = self._machine_map_path.text().strip()
-        if not text:
+        path = self._selected_machine_map_path()
+        if path is None:
+            text = self._machine_map_path.text().strip()
+            path = Path(text) if text else None
+        if path is None:
             self._machine_map_preset_name.setText("-")
             return
-        path = Path(text)
         if not path.exists():
             self._machine_map_preset_name.setText("-")
             return
         try:
-            from capp.machine_map import read_machine_parameter_map_metadata
-
-            metadata = read_machine_parameter_map_metadata(path)
-            label = metadata.preset_name
-            if metadata.voxel_spacing is not None:
-                label = f"{label} ({metadata.voxel_spacing:g} mm)"
+            metadata = self._read_machine_map_metadata(path)
+            label = self._machine_map_detail_label(metadata)
             self._machine_map_preset_name.setText(label)
-            if self._machine_preset.currentText() == "Machine Map":
+            if self._selected_machine_map_path() is not None:
                 self._apply_machine_map_spacing(metadata.voxel_spacing)
             if load_contour and hasattr(self, "_machine_map_contour_label"):
                 self._load_machine_map_contour(path, silent=True)
@@ -2391,7 +2582,8 @@ class WorkbenchMainWindow:
             self._machine_map_preset_name.setText(f"Unreadable map: {exc}")
 
     def _update_machine_preset_controls(self, *_args) -> None:
-        machine_map_active = self._machine_preset.currentText() == "Machine Map"
+        machine_map_active = self._selected_machine_map_path() is not None
+        self._sync_machine_map_path_from_preset()
         if machine_map_active:
             self._neighborhood.blockSignals(True)
             self._neighborhood.setCurrentText("DirectionalVN")
@@ -2434,9 +2626,10 @@ class WorkbenchMainWindow:
         if not hasattr(self, "_machine_map_path"):
             return
         self._machine_map_path.setEnabled(machine_map_active)
+        self._machine_map_path.setReadOnly(True)
         browse_button = getattr(self._machine_map_path, "_browse_button", None)
         if browse_button is not None:
-            browse_button.setEnabled(machine_map_active)
+            browse_button.setEnabled(True)
         self._machine_map_preset_name.setEnabled(machine_map_active)
 
     def _default_machine_coordinate_path(self) -> Path:
@@ -2474,18 +2667,14 @@ class WorkbenchMainWindow:
 
     def _default_machine_map_path(self) -> Path:
         path = (
-            Path("examples")
-            / "outputs"
-            / "model_calibration"
-            / "machine_presets"
-            / "Machine_Map"
+            _machine_map_preset_output_dir(
+                _default_machine_preset_library_root(),
+                "Machine Map",
+            )
             / "machine_parameter_map.npz"
         )
         if path.exists():
             return path
-        legacy = Path("examples") / "outputs" / "model_calibration" / "machine_parameter_map.npz"
-        if legacy.exists():
-            return legacy
         return path
 
     def _preview_source_changed(self, source: str) -> None:
@@ -3114,7 +3303,7 @@ class WorkbenchMainWindow:
             if not sample_dir.exists():
                 raise ValueError("Select a valid ROI sample folder.")
             if not str(output_dir):
-                raise ValueError("Select an output directory.")
+                raise ValueError("Select a preset library.")
             spacing = self._float(self._calibration_spacing, "Grid spacing")
             sample_names = self._model_calibration_sample_filter()
             backend = self._selected_calibration_backend()
@@ -3211,11 +3400,16 @@ class WorkbenchMainWindow:
         }
 
     def _machine_map_run_configuration(self, output_dir: Path, result) -> dict[str, object]:
-        calibration_config = self._model_calibration_run_configuration(output_dir)
+        requested_preset_name = self._machine_map_name.text().strip() or "Machine Map"
+        calibration_output_dir = _model_calibration_preset_output_dir(
+            output_dir,
+            requested_preset_name,
+        )
+        calibration_config = self._model_calibration_run_configuration(calibration_output_dir)
         return {
             "format": "virtual_pbf.machine_parameter_map_run.v1",
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "requested_preset_name": self._machine_map_name.text().strip() or "Machine Map",
+            "requested_preset_name": requested_preset_name,
             "generated_preset_name": result.preset_name,
             "output_root": str(output_dir),
             "weights_csv": str(result.weights_csv) if result.weights_csv is not None else None,
@@ -3310,9 +3504,11 @@ class WorkbenchMainWindow:
             )
             return
         try:
-            output_dir = Path(self._calibration_output_dir.text().strip())
-            if not str(output_dir):
-                raise ValueError("Select an output directory.")
+            output_root = Path(self._calibration_output_dir.text().strip())
+            if not str(output_root):
+                raise ValueError("Select a preset library.")
+            preset_name = self._machine_map_name.text().strip() or "Machine Map"
+            output_dir = _model_calibration_preset_output_dir(output_root, preset_name)
         except Exception as exc:
             self._QMessageBox.warning(self._window, "Invalid output", str(exc))
             return
@@ -3529,7 +3725,12 @@ class WorkbenchMainWindow:
                 "Run Model Calibration before exporting research artifacts.",
             )
             return
-        output_dir = result.output_dir or Path(self._calibration_output_dir.text().strip())
+        output_root = Path(self._calibration_output_dir.text().strip())
+        preset_name = self._machine_map_name.text().strip() or "Machine Map"
+        output_dir = result.output_dir or _model_calibration_preset_output_dir(
+            output_root,
+            preset_name,
+        )
         geometry_path = self._last_calibration_geometry_path or Path(
             self._calibration_geometry.text().strip()
         )
@@ -3606,8 +3807,16 @@ class WorkbenchMainWindow:
         self._thread_pool.start(worker)
 
     def _machine_map_weights_csv_path(self) -> Path:
-        output_dir = Path(self._calibration_output_dir.text().strip())
-        return output_dir / "model_calibration_weights.csv"
+        output_root = Path(self._calibration_output_dir.text().strip())
+        preset_name = self._machine_map_name.text().strip() or "Machine Map"
+        preset_csv = (
+            _model_calibration_preset_output_dir(output_root, preset_name)
+            / "model_calibration_weights.csv"
+        )
+        legacy_csv = output_root / "model_calibration_weights.csv"
+        if preset_csv.exists() or not legacy_csv.exists():
+            return preset_csv
+        return legacy_csv
 
     def _set_machine_map_progress(self, percent: int, message: str) -> None:
         value = max(0, min(100, int(percent)))
@@ -3621,13 +3830,14 @@ class WorkbenchMainWindow:
         self._machine_map_worker = None
         self._last_machine_map_result = result
         self._last_machine_map_export_result = None
-        output_dir = Path(self._calibration_output_dir.text().strip())
+        library_root = Path(self._calibration_output_dir.text().strip())
+        map_dir = _machine_map_preset_output_dir(library_root, result.preset_name)
         self._machine_map_outputs_label.setText(
             "\n".join(
                 [
                     f"Preset: {result.preset_name}",
                     "State: In memory",
-                    f"Target output: {output_dir}",
+                    f"Target folder: {map_dir}",
                     "Files: Not saved",
                 ]
             )
@@ -3665,19 +3875,21 @@ class WorkbenchMainWindow:
             )
             return
         try:
-            output_dir = Path(self._calibration_output_dir.text().strip())
-            if not str(output_dir):
-                raise ValueError("Select an output directory.")
+            library_root = Path(self._calibration_output_dir.text().strip())
+            if not str(library_root):
+                raise ValueError("Select a preset library.")
+            preset_folder = _machine_map_preset_output_dir(library_root, result.preset_name)
         except Exception as exc:
             self._QMessageBox.warning(self._window, "Invalid output", str(exc))
             return
 
-        self._append_log(f"Saving Machine Parameter Map to: {output_dir}")
+        self._append_log(f"Saving Machine Parameter Map to: {preset_folder}")
         self._set_busy(True, "Saving Machine Parameter Map...", task="machine_map_save")
         worker = _SaveMachineMapWorker(
-            str(output_dir),
+            str(library_root),
+            str(preset_folder),
             result,
-            self._machine_map_run_configuration(output_dir, result),
+            self._machine_map_run_configuration(library_root, result),
         )
         worker.signals.progress.connect(self._set_machine_map_progress)
         worker.signals.finished.connect(self._machine_map_save_finished)
@@ -3706,9 +3918,7 @@ class WorkbenchMainWindow:
             f"{result.resolution} x {result.resolution} grid"
         )
         self._machine_map_path.setText(str(result.map_npz))
-        self._machine_preset.setCurrentText("Machine Map")
-        self._machine_map_preset_name.setText(result.preset_name)
-        self._load_machine_map_contour(result.map_npz)
+        self._refresh_machine_preset_list(select_path=result.map_npz, load_contour=True)
         self._append_log(
             "Machine parameter map saved: "
             f"{result.map_npz}, {result.metadata_json}, "
@@ -4235,9 +4445,10 @@ class WorkbenchMainWindow:
             if self._stochastic_mode.currentText() == "In-layer"
             else StochasticMode.IN_VOLUME
         )
+        selected_machine_map_path = self._selected_machine_map_path()
         machine_bias = (
             MachineBiasMode.NONE
-            if self._machine_preset.currentText() == "None"
+            if selected_machine_map_path is None
             else MachineBiasMode.PRESET
         )
         machine_map_path = None
@@ -4245,7 +4456,7 @@ class WorkbenchMainWindow:
         machine_map_coordinate_mode = MachineMapCoordinateMode.FULL_BASE_PLATE
         machine_map_bounds = None
         if machine_bias is MachineBiasMode.PRESET:
-            machine_map_path = Path(self._machine_map_path.text().strip())
+            machine_map_path = selected_machine_map_path
             if not machine_map_path.exists():
                 raise ValueError("Select a valid machine parameter map .npz file.")
             coordinate_mode_text = self._machine_map_coordinate_mode.currentText()

@@ -203,6 +203,38 @@ def test_save_machine_parameter_map_outputs_keeps_configuration_and_inputs(tmp_p
     assert (saved.output_dir / "inputs" / coordinates_path.name).exists()
 
 
+def test_save_machine_parameter_map_outputs_can_use_exact_preset_folder(tmp_path: Path):
+    weights = tmp_path / "model_calibration_weights.csv"
+    coordinates_path = tmp_path / "sp_coordinates.xlsx"
+    _write_minimal_weights_csv(weights)
+    _write_minimal_coordinates_xlsx(coordinates_path)
+    built = build_machine_parameter_map_from_files(
+        weights_csv=weights,
+        coordinates_xlsx=coordinates_path,
+        resolution=9,
+        preset_name="Preset A",
+    )
+    library_root = tmp_path / "library"
+    preset_folder = library_root / "Preset_A" / "map"
+
+    saved = save_machine_parameter_map_outputs(
+        output_dir=library_root,
+        preset_folder=preset_folder,
+        model=built.model,
+        grid=built.grid,
+        parameters=built.parameters,
+        coordinates=built.coordinates,
+        resolution=built.resolution,
+        preset_name=built.preset_name,
+        weights_csv=weights,
+        coordinates_xlsx=coordinates_path,
+    )
+
+    assert saved.output_dir == preset_folder
+    assert saved.map_npz == preset_folder / "machine_parameter_map.npz"
+    assert not (library_root / "machine_presets").exists()
+
+
 def _write_minimal_weights_csv(path: Path) -> None:
     path.write_text(
         "\n".join(

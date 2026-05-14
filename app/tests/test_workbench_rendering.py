@@ -1,6 +1,17 @@
+from pathlib import Path
+
 import numpy as np
 
-from capp.workbench.app import _roi_outline_rgb, _roi_overlay_rgb, _workbench_colormap
+from capp.workbench.app import (
+    _default_machine_preset_library_root,
+    _legacy_model_calibration_root,
+    _machine_map_preset_output_dir,
+    _machine_preset_folder,
+    _model_calibration_preset_output_dir,
+    _roi_outline_rgb,
+    _roi_overlay_rgb,
+    _workbench_colormap,
+)
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -46,3 +57,22 @@ def test_workbench_colormap_has_continuous_parameter_colors():
     assert rgb.shape == (1, 3, 3)
     assert tuple(rgb[0, 0]) != tuple(rgb[0, 1])
     assert tuple(rgb[0, 1]) != tuple(rgb[0, 2])
+
+
+def test_model_calibration_output_dir_uses_preset_folder(tmp_path):
+    output_dir = _model_calibration_preset_output_dir(tmp_path, "Machine Map")
+
+    assert _default_machine_preset_library_root() == (
+        Path("workbench_library") / "machine_presets"
+    )
+    assert _legacy_model_calibration_root() == (
+        Path("examples") / "outputs" / "model_calibration"
+    )
+    assert _machine_preset_folder(tmp_path, "Machine Map") == tmp_path / "Machine_Map"
+    assert output_dir == tmp_path / "Machine_Map" / "calibration"
+    assert _machine_map_preset_output_dir(tmp_path, "Machine Map") == (
+        tmp_path / "Machine_Map" / "map"
+    )
+    assert _model_calibration_preset_output_dir(tmp_path, "Preset A/Trial") == (
+        tmp_path / "Preset_A_Trial" / "calibration"
+    )
