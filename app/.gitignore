@@ -9,6 +9,7 @@ build/
 dist/
 *.egg-info/
 outputs/
+examples/outputs/
 workbench_library/
 native/build-ninja/
 CMakeCache.txt

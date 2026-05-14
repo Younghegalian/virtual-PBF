@@ -17,4 +17,5 @@
 
 The MATLAB source code (`EXECUTION.m`, `functions/`, `OpenLibrary/`) and CT preprocessing scripts were intentionally left in the original folders. The app now treats them as reference material, not runtime code.
 
-Python virtual environments, caches, generated example outputs, and native build folders are also omitted.
+Python virtual environments, caches, generated example outputs, Workbench preset libraries,
+and native build folders are also omitted.
