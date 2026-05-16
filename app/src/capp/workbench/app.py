@@ -557,8 +557,7 @@ class _SaveMachineMapWorker(QRunnable):
 
 class WorkbenchMainWindow:
     def __init__(self) -> None:
-        from PySide6.QtCore import QSettings, QThreadPool, Qt
-        from PySide6.QtGui import QIcon
+        from PySide6.QtCore import QSettings, QSize, QThreadPool, Qt
         from PySide6.QtWidgets import (
             QFileDialog,
             QLabel,
@@ -573,11 +572,11 @@ class WorkbenchMainWindow:
             QWidget,
         )
 
-        from capp.workbench.branding import APP_NAME, APP_ORGANIZATION, app_icon_path
+        from capp.workbench.branding import APP_NAME, APP_ORGANIZATION, apply_window_branding
 
         self._window = QMainWindow()
         self._window.setWindowTitle(APP_NAME)
-        self._window.setWindowIcon(QIcon(str(app_icon_path())))
+        apply_window_branding(self._window)
         self._window.resize(1600, 960)
         self._current_theme = "workbench_light"
         self._settings = QSettings(APP_ORGANIZATION, APP_NAME)
@@ -598,8 +597,10 @@ class WorkbenchMainWindow:
 
         self._navigation = QListWidget()
         self._navigation.setObjectName("Navigation")
-        self._navigation.setFixedWidth(204)
-        self._navigation.setSpacing(0)
+        self._navigation.setFixedWidth(190)
+        self._navigation.setSpacing(2)
+        self._navigation.setIconSize(QSize(0, 0))
+        self._navigation.setUniformItemSizes(True)
         self._navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._navigation.currentRowChanged.connect(self._set_page)
         self._last_result = None
@@ -677,10 +678,17 @@ class WorkbenchMainWindow:
         self._sync_main_splitter_sizes()
 
     def show(self, maximized: bool = False) -> None:
+        from PySide6.QtCore import QTimer
+
+        from capp.workbench.branding import apply_window_branding
+
         if maximized:
             self._window.showMaximized()
         else:
             self._window.show()
+        apply_window_branding(self._window)
+        QTimer.singleShot(0, lambda: apply_window_branding(self._window))
+        QTimer.singleShot(250, lambda: apply_window_branding(self._window))
         self._sync_main_splitter_sizes()
 
     def _sync_main_splitter_sizes(self) -> None:
@@ -691,10 +699,14 @@ class WorkbenchMainWindow:
         content_width = max(1, total_width - nav_width - self._main_splitter.handleWidth())
         self._main_splitter.setSizes([nav_width, content_width])
 
-    def _add_feature(self, icon_key: str, title: str, widget: object) -> None:
+    def _add_feature(self, _icon_key: str, title: str, widget: object) -> None:
         from PySide6.QtWidgets import QListWidgetItem
 
-        item = QListWidgetItem(self._icons[icon_key], title)
+        item = QListWidgetItem(f"{self._navigation.count() + 1:02d}  {title}")
+        item.setToolTip(title)
+        item.setTextAlignment(
+            self._Qt.AlignmentFlag.AlignVCenter | self._Qt.AlignmentFlag.AlignLeft
+        )
         self._navigation.addItem(item)
         self._stack.addWidget(widget)
 
@@ -715,19 +727,27 @@ class WorkbenchMainWindow:
                 background: transparent;
             }
             #Navigation {
-                background: #f4f7fa;
-                border-right: 1px solid #aeb8c4;
-                padding: 4px;
+                background: #182231;
+                border-right: 1px solid #101722;
+                color: #dbe4ee;
+                padding: 8px 4px;
+                outline: 0;
             }
             #Navigation::item {
-                min-height: 25px;
-                padding: 2px 7px;
-                border-radius: 1px;
-                margin: 0;
+                min-height: 34px;
+                padding: 0 11px;
+                border-radius: 3px;
+                margin: 1px 2px;
+                color: #cbd5e1;
+                font-weight: 600;
+            }
+            #Navigation::item:hover {
+                background: #223047;
+                color: #ffffff;
             }
             #Navigation::item:selected {
-                background: #dbe6f2;
-                border-left: 3px solid #2563eb;
+                background: #f7f9fb;
+                border-left: 3px solid #2f8acb;
                 color: #0f172a;
             }
             #FeatureStack {
