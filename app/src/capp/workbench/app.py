@@ -1559,6 +1559,24 @@ class WorkbenchMainWindow:
         form.addRow("Slice", self._slice_slider)
         result_layout.addWidget(controls_box)
 
+        deviation_box = QGroupBox("Geometry Deviation")
+        deviation_form = QFormLayout(deviation_box)
+        self._configure_form(deviation_form)
+        self._deviation_stl_path = QLineEdit()
+        deviation_form.addRow(
+            "Original STL",
+            self._file_row(self._deviation_stl_path, self._browse_deviation_stl),
+        )
+        deviation_button = QPushButton("Show Deviation Heatmap")
+        deviation_button.setEnabled(False)
+        deviation_button.clicked.connect(self._preview_geometry_deviation)
+        self._deviation_button = deviation_button
+        deviation_form.addRow("", deviation_button)
+        self._deviation_summary = QLabel("-")
+        self._deviation_summary.setWordWrap(True)
+        deviation_form.addRow("Summary", self._deviation_summary)
+        result_layout.addWidget(deviation_box)
+
         preview_button = QPushButton("Preview 3D")
         preview_button.clicked.connect(self._preview_loaded_result)
         result_layout.addWidget(preview_button)
@@ -2931,11 +2949,18 @@ class WorkbenchMainWindow:
             self._result_npz_path.setText(path)
             self._load_result_npz(path)
 
+    def _browse_deviation_stl(self) -> None:
+        path = self._open_file("Select original STL", "STL files (*.stl);;All files (*.*)")
+        if path:
+            self._deviation_stl_path.setText(path)
+            self._append_log(f"Geometry deviation original STL selected: {path}")
+
     def _load_result_npz(self, path: str | Path) -> None:
         try:
             import numpy as np
 
             data = np.load(path)
+            source_geometry = self._result_source_geometry_from_npz(data)
             self._loaded_result = {
                 "probability": data["probability"],
                 "binary": data["binary"].astype(bool),
@@ -2943,7 +2968,9 @@ class WorkbenchMainWindow:
                 "spacing": float(data["spacing"][0]),
                 "origin": tuple(float(v) for v in data["origin"]),
                 "path": Path(path),
+                "source_geometry": source_geometry,
             }
+            self._sync_deviation_stl_from_result()
             self._output_label.setText(str(Path(path).parent))
             self._files_label.setText("\n".join(data.files))
             self._append_log(f"Loaded result NPZ: {path}")
@@ -2951,6 +2978,15 @@ class WorkbenchMainWindow:
         except Exception as exc:
             self._append_log(f"Result load failed: {exc}")
             self._QMessageBox.critical(self._window, "Result load failed", str(exc))
+
+    def _result_source_geometry_from_npz(self, data) -> Path | None:
+        if "source_geometry" not in data.files:
+            return None
+        raw = data["source_geometry"]
+        if raw.size == 0:
+            return None
+        text = str(raw[0]).strip()
+        return Path(text) if text else None
 
     def _set_loaded_result_from_simulation(self, result, output_dir: Path) -> None:
         self._loaded_result = {
@@ -2960,11 +2996,19 @@ class WorkbenchMainWindow:
             "spacing": result.spacing,
             "origin": result.origin,
             "path": None,
+            "source_geometry": result.source_geometry,
         }
+        self._sync_deviation_stl_from_result()
         self._result_npz_path.setText("")
         self._output_label.setText(f"In memory; target: {output_dir}")
         self._files_label.setText("Not saved")
         self._refresh_result_views()
+
+    def _sync_deviation_stl_from_result(self) -> None:
+        if not hasattr(self, "_deviation_stl_path"):
+            return
+        source = None if self._loaded_result is None else self._loaded_result.get("source_geometry")
+        self._deviation_stl_path.setText("" if source is None else str(source))
 
     def _refresh_result_views(self, *_args) -> None:
         if self._loaded_result is None:
@@ -2997,6 +3041,54 @@ class WorkbenchMainWindow:
             spacing=self._loaded_result["spacing"],
             origin=self._loaded_result["origin"],
             label=label,
+        )
+
+    def _preview_geometry_deviation(self) -> None:
+        if self._loaded_result is None:
+            self._QMessageBox.warning(self._window, "Missing result", "Load or run a result first.")
+            return
+        stl_text = self._deviation_stl_path.text().strip()
+        if not stl_text:
+            self._QMessageBox.warning(
+                self._window,
+                "Missing STL",
+                "Select the original STL before generating a deviation heatmap.",
+            )
+            return
+        stl_path = Path(stl_text)
+        if not stl_path.exists():
+            self._QMessageBox.warning(
+                self._window,
+                "Invalid STL",
+                "Select a valid original STL file.",
+            )
+            return
+        volume = self._selected_result_volume()
+        label = self._result_volume_choice.currentText()
+        self._append_log(f"Rendering geometry deviation heatmap: {stl_path}")
+        try:
+            metrics = self._result_preview.show_geometry_deviation(
+                stl_path,
+                volume,
+                spacing=self._loaded_result["spacing"],
+                origin=self._loaded_result["origin"],
+                label=label,
+            )
+        except Exception as exc:
+            self._append_log(f"Geometry deviation heatmap failed: {exc}")
+            self._QMessageBox.critical(self._window, "Geometry deviation failed", str(exc))
+            return
+        self._deviation_summary.setText(
+            "mean |d| "
+            f"{metrics['mean_abs_mm']:.4g} mm, p95 {metrics['p95_abs_mm']:.4g} mm, "
+            f"max |d| {metrics['max_abs_mm']:.4g} mm, signed "
+            f"{metrics['min_signed_mm']:.4g} to {metrics['max_signed_mm']:.4g} mm"
+        )
+        self._append_log(
+            "Geometry deviation ready: "
+            f"mean |d|={metrics['mean_abs_mm']:.4g} mm, "
+            f"p95={metrics['p95_abs_mm']:.4g} mm, "
+            f"max |d|={metrics['max_abs_mm']:.4g} mm"
         )
 
     def _update_result_slice(self, *_args) -> None:
@@ -4354,6 +4446,8 @@ class WorkbenchMainWindow:
             self._save_loaded_result_button.setText(
                 "Saving..." if busy and task == "save" else "Save Current Result"
             )
+        if hasattr(self, "_deviation_button"):
+            self._deviation_button.setEnabled((not busy) and self._loaded_result is not None)
         if hasattr(self, "_run_calibration_button"):
             self._run_calibration_button.setEnabled(not busy)
             self._run_calibration_button.setText(

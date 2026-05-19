@@ -19,6 +19,8 @@ runtime path is Python package code under `src/capp`.
 - Generate and save machine parameter maps from calibration weights plus SP coordinates.
 - Preview saved/generated machine maps as contour images.
 - List saved machine presets by configured preset name in the simulation page.
+- Render a geometry deviation heatmap by comparing an original STL against the result
+  iso-surface extracted from a virtual printing volume.
 
 ## Important Limitation
 
@@ -110,6 +112,8 @@ only the backing `.npz` location.
 - Reusable calibration and machine-map artifacts: `workbench_library/machine_presets/<preset>/`
 - Simulation run outputs: the simulation page `Output dir`, defaulting to
   `examples/outputs/gui_simulation`
+- Saved simulation NPZ files include the source STL path when the result was produced inside
+  the Workbench, so Result Display can auto-fill the geometry deviation input.
 - Generated folders are ignored by git: `workbench_library/`, `outputs/`, and
   `examples/outputs/`
 

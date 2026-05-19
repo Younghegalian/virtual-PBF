@@ -195,6 +195,103 @@ class PreviewPane:
         self._last_volume_request = (volume, spacing, origin, label)
         self._render_voxels(volume, spacing, origin, label)
 
+    def show_geometry_deviation(
+        self,
+        stl_path: str | Path,
+        volume: NDArray,
+        spacing: float,
+        origin: tuple[float, float, float],
+        *,
+        label: str = "Binary",
+        threshold: float = 0.5,
+    ) -> dict[str, float]:
+        try:
+            pv = self._load_pyvista()
+            self._last_volume_request = None
+            self._render_mode.setVisible(False)
+            data, stride = self._prepare_volume_data(volume, "Smooth Surface")
+            if not self._is_binary_volume(data):
+                threshold = 0.5
+            render_spacing = float(spacing) * stride
+
+            original_mesh, original_cells = prepare_stl_preview_mesh(stl_path)
+            printed_surface = self._make_isosurface_mesh(
+                pv,
+                data,
+                spacing=render_spacing,
+                origin=origin,
+                level=float(threshold),
+            )
+            with suppress(Exception):
+                printed_surface = printed_surface.compute_normals(
+                    point_normals=True,
+                    cell_normals=False,
+                    auto_orient_normals=True,
+                    consistent_normals=True,
+                    split_vertices=False,
+                )
+            deviation_surface, metrics = self._geometry_deviation_surface(
+                printed_surface,
+                original_mesh,
+            )
+
+            plotter = self._ensure_plotter()
+            plotter.clear()
+            self._prepare_scene(plotter)
+            with suppress(Exception):
+                plotter.enable_eye_dome_lighting()
+
+            plotter.add_mesh(
+                original_mesh,
+                color="#cbd5e1",
+                opacity=0.22,
+                smooth_shading=True,
+                show_edges=False,
+                lighting=True,
+                ambient=0.5,
+                diffuse=0.45,
+                specular=0.08,
+            )
+            scalar_limit = max(metrics["p95_abs_mm"], metrics["mean_abs_mm"], render_spacing)
+            plotter.add_mesh(
+                deviation_surface,
+                scalars="Deviation (mm)",
+                cmap="coolwarm",
+                clim=(-scalar_limit, scalar_limit),
+                smooth_shading=True,
+                show_edges=False,
+                lighting=True,
+                ambient=0.42,
+                diffuse=0.66,
+                specular=0.12,
+                specular_power=12.0,
+                show_scalar_bar=True,
+                scalar_bar_args={
+                    "title": "Deviation (mm)",
+                    "vertical": True,
+                    "height": 0.58,
+                    "width": 0.08,
+                    "position_x": 0.9,
+                    "position_y": 0.2,
+                },
+            )
+            plotter.add_mesh(original_mesh.outline(), color="#334155", line_width=1.3)
+            plotter.add_axes()
+            self._set_cad_camera(plotter, original_mesh.bounds)
+            suffix = f" stride x{stride}" if stride > 1 else ""
+            if original_cells and original_cells > original_mesh.n_cells:
+                suffix = f"{suffix} STL {original_mesh.n_cells:,}/{original_cells:,} cells"
+            self._title.setText(
+                "Geometry Deviation: "
+                f"mean |d| {metrics['mean_abs_mm']:.4g} mm, "
+                f"p95 {metrics['p95_abs_mm']:.4g} mm{suffix}"
+            )
+            self._status.setText("")
+            return metrics
+        except Exception as exc:
+            self.show_message(f"Geometry deviation preview failed: {exc}")
+            raise
+
     def _render_voxels(
         self,
         volume: NDArray,
@@ -627,6 +724,33 @@ class PreviewPane:
         except Exception:
             grid = self._make_binary_cell_grid(pv, data > 0.0, spacing, origin, "Binary")
             self._add_binary_blocks(plotter, grid, "Binary", data)
+
+    def _geometry_deviation_surface(self, printed_surface, original_mesh):
+        with suppress(Exception):
+            original_mesh = original_mesh.compute_normals(
+                point_normals=True,
+                cell_normals=False,
+                auto_orient_normals=True,
+                consistent_normals=True,
+                split_vertices=False,
+            )
+        deviation_surface = printed_surface.compute_implicit_distance(
+            original_mesh,
+            inplace=False,
+        )
+        distances = np.asarray(deviation_surface.point_data["implicit_distance"], dtype=np.float64)
+        distances = np.nan_to_num(distances, nan=0.0, posinf=0.0, neginf=0.0)
+        deviation_surface.point_data["Deviation (mm)"] = distances.astype(np.float32)
+        abs_distances = np.abs(distances)
+        metrics = {
+            "mean_abs_mm": float(abs_distances.mean()) if abs_distances.size else 0.0,
+            "p95_abs_mm": float(np.percentile(abs_distances, 95)) if abs_distances.size else 0.0,
+            "max_abs_mm": float(abs_distances.max()) if abs_distances.size else 0.0,
+            "min_signed_mm": float(distances.min()) if distances.size else 0.0,
+            "max_signed_mm": float(distances.max()) if distances.size else 0.0,
+            "sample_count": float(distances.size),
+        }
+        return deviation_surface, metrics
 
     def _add_paraview_volume(
         self,

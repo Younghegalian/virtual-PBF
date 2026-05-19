@@ -91,3 +91,23 @@ def test_isosurface_closes_boundary_touching_volume():
 
     assert surface.bounds == (0.0, 5.0, 0.0, 5.0, 0.0, 3.0)
     assert boundary_edges.n_cells == 0
+
+
+def test_geometry_deviation_surface_reports_near_zero_for_matching_box():
+    pv = pytest.importorskip("pyvista")
+    pane = object.__new__(PreviewPane)
+    volume = np.zeros((8, 8, 8), dtype=np.float32)
+    volume[2:6, 2:6, 2:6] = 1.0
+    printed = PreviewPane._make_isosurface_mesh(
+        pane,
+        pv,
+        volume,
+        spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+    )
+    original = pv.Box(bounds=(2.0, 6.0, 2.0, 6.0, 2.0, 6.0)).triangulate()
+
+    _surface, metrics = PreviewPane._geometry_deviation_surface(pane, printed, original)
+
+    assert metrics["sample_count"] > 0
+    assert metrics["max_abs_mm"] < 1e-5
