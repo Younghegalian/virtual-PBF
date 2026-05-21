@@ -5725,7 +5725,7 @@ class WorkbenchMainWindow:
                 self._append_log(f"Machine map bounds: {solver.machine_map_bounds}")
             else:
                 self._append_log(f"Machine map part center: {solver.machine_map_position}")
-        self._append_log(f"Solver backend: {solver.backend.value}")
+        self._append_log(f"Solver backend: {self._solver_label(solver.backend.value)}")
 
     def _float(self, field, label: str) -> float:
         try:

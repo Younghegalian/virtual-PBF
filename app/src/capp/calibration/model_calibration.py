@@ -40,9 +40,9 @@ MODEL_CALIBRATION_OPTIMIZERS = (
     "latin_hypercube",
 )
 _SOLVER_LABELS = {
-    SolverBackend.CPU_REFERENCE: "PBF Standard",
-    SolverBackend.CPU_NATIVE: "PBF Direct",
-    SolverBackend.CUDA: "PBF X",
+    SolverBackend.CPU_REFERENCE: "Basic",
+    SolverBackend.CPU_NATIVE: "C++ vectorized",
+    SolverBackend.CUDA: "GPU CUDA",
 }
 
 

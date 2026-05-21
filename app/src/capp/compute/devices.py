@@ -23,9 +23,9 @@ def solver_backend_statuses() -> list[BackendStatus]:
     return [
         BackendStatus(
             backend=SolverBackend.CPU_REFERENCE,
-            label="PBF Standard",
+            label="Basic",
             available=True,
-            detail="Baseline analysis engine for verification and debugging.",
+            detail="Plain Python solver for verification and debugging.",
         ),
         _native_cpu_status(),
         _cuda_status(gpu_detail),
@@ -37,9 +37,9 @@ def validate_solver_backend(backend: SolverBackend) -> BackendStatus:
     if backend is SolverBackend.CPU_REFERENCE:
         status = BackendStatus(
             backend=SolverBackend.CPU_REFERENCE,
-            label="PBF Standard",
+            label="Basic",
             available=True,
-            detail="Baseline analysis engine for verification and debugging.",
+            detail="Plain Python solver for verification and debugging.",
         )
     elif backend is SolverBackend.CPU_NATIVE:
         status = _native_cpu_status()
@@ -67,9 +67,9 @@ def _native_cpu_status() -> BackendStatus:
     if module_ready:
         return BackendStatus(
             backend=SolverBackend.CPU_NATIVE,
-            label="PBF Direct",
+            label="C++ vectorized",
             available=True,
-            detail="Primary production solver for calibration and simulation runs.",
+            detail="Native vectorized C++ solver for calibration and simulation runs.",
         )
 
     detail_parts.append("Native layerwise solver module is not built or lacks solve_von_neumann().")
@@ -77,7 +77,7 @@ def _native_cpu_status() -> BackendStatus:
     detail_parts.append(f"C++ compiler: {_cxx_tool_state()}.")
     return BackendStatus(
         backend=SolverBackend.CPU_NATIVE,
-        label="PBF Direct",
+        label="C++ vectorized",
         available=False,
         detail=" ".join(detail_parts),
     )
@@ -95,9 +95,9 @@ def _cuda_status(gpu_detail: str) -> BackendStatus:
         float(cp.sum(test).get())
         return BackendStatus(
             backend=SolverBackend.CUDA,
-            label="PBF X",
+            label="GPU CUDA",
             available=True,
-            detail=f"High-performance analysis engine is available. {gpu_detail}",
+            detail=f"CUDA GPU solver is available. {gpu_detail}",
         )
     except Exception as exc:
         cupy_detail = f"CUDA layerwise solver unavailable: {exc}."
@@ -107,7 +107,7 @@ def _cuda_status(gpu_detail: str) -> BackendStatus:
     detail_parts.append(f"nvcc: {_tool_state('nvcc')}.")
     return BackendStatus(
         backend=SolverBackend.CUDA,
-        label="PBF X",
+        label="GPU CUDA",
         available=False,
         detail=" ".join(detail_parts),
     )

@@ -258,4 +258,4 @@ def _layer_progress(
     safe_iteration_bound = max(1, iteration_bound)
     layer_fraction = (layer - 1 + min(iteration, safe_iteration_bound) / safe_iteration_bound)
     percent = int((layer_fraction / max(1, layer_count)) * 92)
-    _report(progress_callback, percent, "Running PBF X solver")
+    _report(progress_callback, percent, "Running GPU CUDA solver")
