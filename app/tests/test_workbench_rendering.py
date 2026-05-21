@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from capp.workbench.app import (
+    WorkbenchMainWindow,
     _default_machine_preset_library_root,
     _legacy_model_calibration_root,
     _machine_map_preset_output_dir,
@@ -12,6 +13,23 @@ from capp.workbench.app import (
     _roi_overlay_rgb,
     _workbench_colormap,
 )
+from capp.workbench.preview import PreviewPane
+
+
+class _ButtonProbe:
+    def __init__(self):
+        self.enabled = None
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+
+class _LineEditProbe:
+    def __init__(self):
+        self.text = ""
+
+    def setText(self, text):
+        self.text = str(text)
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -76,3 +94,75 @@ def test_model_calibration_output_dir_uses_preset_folder(tmp_path):
     assert _model_calibration_preset_output_dir(tmp_path, "Preset A/Trial") == (
         tmp_path / "Preset_A_Trial" / "calibration"
     )
+
+
+def test_geometry_deviation_button_updates_after_result_sync(tmp_path):
+    source_geometry = tmp_path / "part.stl"
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._busy = False
+    view._loaded_result = {"source_geometry": source_geometry}
+    view._deviation_button = _ButtonProbe()
+    view._result_display_preview_button = _ButtonProbe()
+    view._deviation_stl_path = _LineEditProbe()
+
+    view._sync_deviation_stl_from_result()
+
+    assert view._deviation_stl_path.text == str(source_geometry)
+    assert view._deviation_button.enabled is True
+    assert view._result_display_preview_button.enabled is True
+
+    view._busy = True
+    view._update_result_action_state()
+
+    assert view._deviation_button.enabled is False
+    assert view._result_display_preview_button.enabled is False
+
+
+def test_loaded_result_change_advances_deviation_revision():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._result_revision = 4
+    view._deviation_summary = _LineEditProbe()
+
+    view._mark_loaded_result_changed()
+
+    assert view._result_revision == 5
+    assert view._deviation_summary.text == "Ready"
+
+
+def test_stale_geometry_deviation_finish_is_discarded():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._result_revision = 2
+    view._geometry_deviation_worker = object()
+    logs = []
+    busy_states = []
+    view._append_log = logs.append
+    view._set_busy = lambda busy, message: busy_states.append((busy, message))
+
+    view._geometry_deviation_finished(object(), 1)
+
+    assert view._geometry_deviation_worker is None
+    assert logs == ["Discarded stale geometry deviation for a previous result."]
+    assert busy_states == [(False, "Stale geometry deviation discarded")]
+
+
+def test_voxel_preview_reports_failures_and_can_raise():
+    pane = PreviewPane.__new__(PreviewPane)
+    pane._status = _LineEditProbe()
+    pane._load_pyvista = lambda: (_ for _ in ()).throw(RuntimeError("no renderer"))
+    volume = np.ones((2, 2, 2), dtype=bool)
+
+    assert pane._render_voxels(volume, 1.0, (0.0, 0.0, 0.0), "Binary") is False
+    assert pane._status.text == "Voxel preview failed: no renderer"
+
+    try:
+        pane._render_voxels(
+            volume,
+            1.0,
+            (0.0, 0.0, 0.0),
+            "Binary",
+            raise_errors=True,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "no renderer"
+    else:
+        raise AssertionError("Expected preview failure to be raised.")

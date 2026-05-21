@@ -12,6 +12,7 @@ def test_voxelizer_uses_matlab_virtual_printing_padding(tmp_path):
     grid = voxelize_mesh(path, spacing=1.0)
 
     assert grid.shape == (6, 6, 4)
+    assert grid.origin == (-2.0, -2.0, 0.0)
     assert grid.data[:2, :, :].sum() == 0
     assert grid.data[-2:, :, :].sum() == 0
     assert grid.data[:, :2, :].sum() == 0

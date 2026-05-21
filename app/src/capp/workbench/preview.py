@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,253 @@ def prepare_stl_preview_mesh(path: str | Path):
             split_vertices=False,
         )
     return mesh, original_cells
+
+
+@dataclass(frozen=True)
+class GeometryDeviationPreview:
+    original_mesh: object
+    original_cells: int
+    deviation_surface: object
+    metrics: dict[str, float]
+    stride: int
+    render_spacing: float
+    alignment_offset: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class PolyDataPayload:
+    points: NDArray[np.float32]
+    faces: NDArray[np.int64]
+    point_data: dict[str, NDArray]
+
+
+@dataclass(frozen=True)
+class GeometryDeviationPreviewPayload:
+    original_mesh: PolyDataPayload
+    original_cells: int
+    deviation_surface: PolyDataPayload
+    metrics: dict[str, float]
+    stride: int
+    render_spacing: float
+    alignment_offset: tuple[float, float, float]
+
+
+def build_geometry_deviation_preview(
+    stl_path: str | Path,
+    volume: NDArray,
+    spacing: float,
+    origin: tuple[float, float, float],
+    *,
+    label: str = "Binary",
+    threshold: float = 0.5,
+    progress_callback=None,
+) -> GeometryDeviationPreview:
+    def progress(percent: int, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(max(0, min(100, int(percent))), message)
+
+    pane = object.__new__(PreviewPane)
+    pane._pyvista = None
+    pv = pane._load_pyvista()
+
+    progress(5, "Preparing result volume")
+    data, stride = pane._prepare_volume_data(volume, "Smooth Surface")
+    if not pane._is_binary_volume(data):
+        threshold = 0.5
+    render_spacing = float(spacing) * stride
+
+    progress(18, "Loading original STL")
+    original_mesh, original_cells = prepare_stl_preview_mesh(stl_path)
+
+    progress(36, "Extracting printed iso-surface")
+    printed_surface = pane._make_isosurface_mesh(
+        pv,
+        data,
+        spacing=render_spacing,
+        origin=origin,
+        level=float(threshold),
+    )
+    printed_surface, alignment_offset = _align_surface_to_source_origin(
+        printed_surface,
+        original_mesh,
+        voxel_spacing=spacing,
+        tolerance_spacing=render_spacing,
+        origin=origin,
+    )
+    with suppress(Exception):
+        printed_surface = printed_surface.compute_normals(
+            point_normals=True,
+            cell_normals=False,
+            auto_orient_normals=True,
+            consistent_normals=True,
+            split_vertices=False,
+        )
+
+    progress(68, "Computing signed distance field")
+    color_zero_tolerance = max(float(spacing) * 1e-3, 1e-9)
+    deviation_surface, metrics = pane._geometry_deviation_surface(
+        printed_surface,
+        original_mesh,
+        color_zero_tolerance=color_zero_tolerance,
+    )
+
+    progress(92, "Preparing heatmap render")
+    return GeometryDeviationPreview(
+        original_mesh=original_mesh,
+        original_cells=original_cells,
+        deviation_surface=deviation_surface,
+        metrics=metrics,
+        stride=stride,
+        render_spacing=render_spacing,
+        alignment_offset=alignment_offset,
+    )
+
+
+def pack_geometry_deviation_preview(
+    preview: GeometryDeviationPreview,
+) -> GeometryDeviationPreviewPayload:
+    return GeometryDeviationPreviewPayload(
+        original_mesh=_polydata_payload(preview.original_mesh),
+        original_cells=preview.original_cells,
+        deviation_surface=_polydata_payload(preview.deviation_surface),
+        metrics=preview.metrics,
+        stride=preview.stride,
+        render_spacing=preview.render_spacing,
+        alignment_offset=preview.alignment_offset,
+    )
+
+
+def unpack_geometry_deviation_preview(
+    preview: GeometryDeviationPreview | GeometryDeviationPreviewPayload,
+) -> GeometryDeviationPreview:
+    if isinstance(preview, GeometryDeviationPreview):
+        return preview
+
+    import pyvista as pv
+
+    return GeometryDeviationPreview(
+        original_mesh=_polydata_from_payload(pv, preview.original_mesh),
+        original_cells=preview.original_cells,
+        deviation_surface=_polydata_from_payload(pv, preview.deviation_surface),
+        metrics=preview.metrics,
+        stride=preview.stride,
+        render_spacing=preview.render_spacing,
+        alignment_offset=preview.alignment_offset,
+    )
+
+
+def _polydata_payload(mesh) -> PolyDataPayload:
+    return PolyDataPayload(
+        points=np.asarray(mesh.points, dtype=np.float32).copy(),
+        faces=np.asarray(mesh.faces, dtype=np.int64).copy(),
+        point_data={
+            name: np.asarray(mesh.point_data[name]).copy()
+            for name in mesh.point_data.keys()
+        },
+    )
+
+
+def _polydata_from_payload(pv, payload: PolyDataPayload):
+    mesh = pv.PolyData(payload.points, payload.faces)
+    for name, values in payload.point_data.items():
+        mesh.point_data[name] = values
+    return mesh
+
+
+def _source_aligned_volume_origin(original_mesh, voxel_spacing: float) -> np.ndarray:
+    from capp.geometry.voxelizer import VOXEL_LOWER_PADDING_CELLS
+
+    bounds = original_mesh.bounds
+    source_min = np.asarray([bounds[0], bounds[2], bounds[4]], dtype=np.float64)
+    lower_padding = np.asarray(VOXEL_LOWER_PADDING_CELLS, dtype=np.float64)
+    return source_min - lower_padding * float(voxel_spacing)
+
+
+def _align_surface_to_source_origin(
+    printed_surface,
+    original_mesh,
+    *,
+    voxel_spacing: float,
+    origin,
+    tolerance_spacing: float | None = None,
+):
+    expected_origin = _source_aligned_volume_origin(original_mesh, voxel_spacing)
+    current_origin = np.asarray(origin, dtype=np.float64)
+    offset = expected_origin - current_origin
+    tolerance = float(tolerance_spacing if tolerance_spacing is not None else voxel_spacing)
+    if np.linalg.norm(offset) <= max(tolerance * 1e-5, 1e-9):
+        return printed_surface, (0.0, 0.0, 0.0)
+    aligned = printed_surface.copy(deep=True)
+    aligned.translate(tuple(float(value) for value in offset), inplace=True)
+    return aligned, tuple(float(value) for value in offset)
+
+
+def _combined_mesh_bounds(*meshes):
+    bounds = np.asarray([mesh.bounds for mesh in meshes], dtype=np.float64)
+    return (
+        float(bounds[:, 0].min()),
+        float(bounds[:, 1].max()),
+        float(bounds[:, 2].min()),
+        float(bounds[:, 3].max()),
+        float(bounds[:, 4].min()),
+        float(bounds[:, 5].max()),
+    )
+
+
+def _deviation_color_values_mm(
+    distances: NDArray,
+    *,
+    zero_tolerance: float = 0.0,
+) -> NDArray[np.float32]:
+    values = np.nan_to_num(
+        np.asarray(distances, dtype=np.float64),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    if zero_tolerance > 0.0:
+        values = values.copy()
+        values[np.abs(values) <= float(zero_tolerance)] = 0.0
+    return values.astype(np.float32)
+
+
+def _deviation_color_limits(metrics: dict[str, float], fallback_scale: float) -> tuple[float, float]:
+    negative_scale = max(float(metrics.get("negative_scale_mm", 0.0)), 0.0)
+    positive_scale = max(float(metrics.get("positive_scale_mm", 0.0)), 0.0)
+    if negative_scale > 0.0 and positive_scale > 0.0:
+        return -negative_scale, positive_scale
+    if negative_scale > 0.0:
+        return -negative_scale, 0.0
+    if positive_scale > 0.0:
+        return 0.0, positive_scale
+    fallback = max(float(fallback_scale), 1e-9)
+    return -fallback, fallback
+
+
+def _deviation_jet_colormap(negative_scale: float, positive_scale: float):
+    from matplotlib import colormaps
+    from matplotlib.colors import LinearSegmentedColormap
+
+    jet = colormaps["jet"]
+    neutral = jet(0.5)
+    negative_scale = max(float(negative_scale), 0.0)
+    positive_scale = max(float(positive_scale), 0.0)
+    if negative_scale > 0.0 and positive_scale > 0.0:
+        zero_position = negative_scale / (negative_scale + positive_scale)
+        colors = [
+            (0.0, jet(0.0)),
+            (zero_position * 0.5, jet(0.25)),
+            (zero_position, neutral),
+            (zero_position + (1.0 - zero_position) * 0.5, jet(0.75)),
+            (1.0, jet(1.0)),
+        ]
+    elif negative_scale > 0.0:
+        colors = [(0.0, jet(0.0)), (0.5, jet(0.25)), (1.0, neutral)]
+    elif positive_scale > 0.0:
+        colors = [(0.0, neutral), (0.5, jet(0.75)), (1.0, jet(1.0))]
+    else:
+        colors = [(0.0, jet(0.0)), (0.5, neutral), (1.0, jet(1.0))]
+    return LinearSegmentedColormap.from_list("deviation_jet_mm", colors, N=256)
 
 
 class PreviewPane:
@@ -169,6 +417,7 @@ class PreviewPane:
             plotter.add_mesh(mesh.outline(), color="#334155", line_width=1.4)
             plotter.add_axes()
             self._set_cad_camera(plotter, mesh.bounds)
+            self._render_plotter(plotter)
             suffix = ""
             if original_cells is not None and original_cells > mesh.n_cells:
                 suffix = f" ({mesh.n_cells:,}/{original_cells:,} cells)"
@@ -191,9 +440,17 @@ class PreviewPane:
         spacing: float,
         origin: tuple[float, float, float],
         label: str = "Binary",
-    ) -> None:
+        *,
+        raise_errors: bool = False,
+    ) -> bool:
         self._last_volume_request = (volume, spacing, origin, label)
-        self._render_voxels(volume, spacing, origin, label)
+        return self._render_voxels(
+            volume,
+            spacing,
+            origin,
+            label,
+            raise_errors=raise_errors,
+        )
 
     def show_geometry_deviation(
         self,
@@ -206,35 +463,28 @@ class PreviewPane:
         threshold: float = 0.5,
     ) -> dict[str, float]:
         try:
-            pv = self._load_pyvista()
+            preview = build_geometry_deviation_preview(
+                stl_path,
+                volume,
+                spacing=spacing,
+                origin=origin,
+                label=label,
+                threshold=threshold,
+            )
+            self.show_geometry_deviation_preview(preview)
+            return preview.metrics
+        except Exception as exc:
+            self.show_message(f"Geometry deviation preview failed: {exc}")
+            raise
+
+    def show_geometry_deviation_preview(
+        self,
+        preview: GeometryDeviationPreview | GeometryDeviationPreviewPayload,
+    ) -> None:
+        try:
+            preview = unpack_geometry_deviation_preview(preview)
             self._last_volume_request = None
             self._render_mode.setVisible(False)
-            data, stride = self._prepare_volume_data(volume, "Smooth Surface")
-            if not self._is_binary_volume(data):
-                threshold = 0.5
-            render_spacing = float(spacing) * stride
-
-            original_mesh, original_cells = prepare_stl_preview_mesh(stl_path)
-            printed_surface = self._make_isosurface_mesh(
-                pv,
-                data,
-                spacing=render_spacing,
-                origin=origin,
-                level=float(threshold),
-            )
-            with suppress(Exception):
-                printed_surface = printed_surface.compute_normals(
-                    point_normals=True,
-                    cell_normals=False,
-                    auto_orient_normals=True,
-                    consistent_normals=True,
-                    split_vertices=False,
-                )
-            deviation_surface, metrics = self._geometry_deviation_surface(
-                printed_surface,
-                original_mesh,
-            )
-
             plotter = self._ensure_plotter()
             plotter.clear()
             self._prepare_scene(plotter)
@@ -242,7 +492,7 @@ class PreviewPane:
                 plotter.enable_eye_dome_lighting()
 
             plotter.add_mesh(
-                original_mesh,
+                preview.original_mesh,
                 color="#cbd5e1",
                 opacity=0.22,
                 smooth_shading=True,
@@ -252,12 +502,16 @@ class PreviewPane:
                 diffuse=0.45,
                 specular=0.08,
             )
-            scalar_limit = max(metrics["p95_abs_mm"], metrics["mean_abs_mm"], render_spacing)
+            metrics = preview.metrics
+            color_limits = _deviation_color_limits(metrics, preview.render_spacing)
             plotter.add_mesh(
-                deviation_surface,
-                scalars="Deviation (mm)",
-                cmap="coolwarm",
-                clim=(-scalar_limit, scalar_limit),
+                preview.deviation_surface,
+                scalars="Deviation color (mm)",
+                cmap=_deviation_jet_colormap(
+                    metrics["negative_scale_mm"],
+                    metrics["positive_scale_mm"],
+                ),
+                clim=color_limits,
                 smooth_shading=True,
                 show_edges=False,
                 lighting=True,
@@ -273,21 +527,39 @@ class PreviewPane:
                     "width": 0.08,
                     "position_x": 0.9,
                     "position_y": 0.2,
+                    "n_labels": 5,
+                    "fmt": "%.3g",
                 },
             )
-            plotter.add_mesh(original_mesh.outline(), color="#334155", line_width=1.3)
+            plotter.add_mesh(preview.original_mesh.outline(), color="#334155", line_width=1.3)
             plotter.add_axes()
-            self._set_cad_camera(plotter, original_mesh.bounds)
-            suffix = f" stride x{stride}" if stride > 1 else ""
-            if original_cells and original_cells > original_mesh.n_cells:
-                suffix = f"{suffix} STL {original_mesh.n_cells:,}/{original_cells:,} cells"
+            self._set_cad_camera(
+                plotter,
+                _combined_mesh_bounds(preview.original_mesh, preview.deviation_surface),
+            )
+            self._render_plotter(plotter)
+            suffix = f" stride x{preview.stride}" if preview.stride > 1 else ""
+            if (
+                preview.original_cells
+                and preview.original_cells > preview.original_mesh.n_cells
+            ):
+                suffix = (
+                    f"{suffix} STL {preview.original_mesh.n_cells:,}/"
+                    f"{preview.original_cells:,} cells"
+                )
+            if max(abs(value) for value in preview.alignment_offset) > 1e-9:
+                offset = preview.alignment_offset
+                suffix = f"{suffix} aligned {offset[0]:.4g}, {offset[1]:.4g}, {offset[2]:.4g} mm"
+            suffix = (
+                f"{suffix} scale -{metrics['negative_scale_mm']:.4g}/"
+                f"+{metrics['positive_scale_mm']:.4g} mm"
+            )
             self._title.setText(
                 "Geometry Deviation: "
                 f"mean |d| {metrics['mean_abs_mm']:.4g} mm, "
                 f"p95 {metrics['p95_abs_mm']:.4g} mm{suffix}"
             )
             self._status.setText("")
-            return metrics
         except Exception as exc:
             self.show_message(f"Geometry deviation preview failed: {exc}")
             raise
@@ -298,7 +570,9 @@ class PreviewPane:
         spacing: float,
         origin: tuple[float, float, float],
         label: str,
-    ) -> None:
+        *,
+        raise_errors: bool = False,
+    ) -> bool:
         try:
             pv = self._load_pyvista()
             plotter = self._ensure_plotter()
@@ -380,6 +654,7 @@ class PreviewPane:
             plotter.add_mesh(grid.outline(), color="#1f2937", line_width=1.8)
             plotter.add_axes()
             self._set_cad_camera(plotter, grid.bounds)
+            self._render_plotter(plotter)
 
             total_stride = stride * block_stride
             suffix = f" (safety stride x{total_stride})" if total_stride > 1 else ""
@@ -389,8 +664,13 @@ class PreviewPane:
                 suffix = f"{suffix} {volume_mapper}"
             mode = render_mode if render_mode != "Points" else "Point Preview"
             self._title.setText(f"{mode}: {label}{suffix}")
+            self._status.setText("")
+            return True
         except Exception as exc:
             self.show_message(f"Voxel preview failed: {exc}")
+            if raise_errors:
+                raise
+            return False
 
     def _rerender_last_volume(self) -> None:
         if self._last_volume_request is None:
@@ -725,7 +1005,13 @@ class PreviewPane:
             grid = self._make_binary_cell_grid(pv, data > 0.0, spacing, origin, "Binary")
             self._add_binary_blocks(plotter, grid, "Binary", data)
 
-    def _geometry_deviation_surface(self, printed_surface, original_mesh):
+    def _geometry_deviation_surface(
+        self,
+        printed_surface,
+        original_mesh,
+        *,
+        color_zero_tolerance: float = 0.0,
+    ):
         with suppress(Exception):
             original_mesh = original_mesh.compute_normals(
                 point_normals=True,
@@ -741,13 +1027,22 @@ class PreviewPane:
         distances = np.asarray(deviation_surface.point_data["implicit_distance"], dtype=np.float64)
         distances = np.nan_to_num(distances, nan=0.0, posinf=0.0, neginf=0.0)
         deviation_surface.point_data["Deviation (mm)"] = distances.astype(np.float32)
+        deviation_surface.point_data["Deviation color (mm)"] = _deviation_color_values_mm(
+            distances,
+            zero_tolerance=color_zero_tolerance,
+        )
         abs_distances = np.abs(distances)
+        negative = distances[distances < 0.0]
+        positive = distances[distances > 0.0]
         metrics = {
             "mean_abs_mm": float(abs_distances.mean()) if abs_distances.size else 0.0,
             "p95_abs_mm": float(np.percentile(abs_distances, 95)) if abs_distances.size else 0.0,
             "max_abs_mm": float(abs_distances.max()) if abs_distances.size else 0.0,
             "min_signed_mm": float(distances.min()) if distances.size else 0.0,
             "max_signed_mm": float(distances.max()) if distances.size else 0.0,
+            "negative_scale_mm": abs(float(negative.min())) if negative.size else 0.0,
+            "positive_scale_mm": float(positive.max()) if positive.size else 0.0,
+            "color_zero_tolerance_mm": float(max(color_zero_tolerance, 0.0)),
             "sample_count": float(distances.size),
         }
         return deviation_surface, metrics
@@ -944,6 +1239,11 @@ class PreviewPane:
                 intensity=0.25,
             )
         )
+
+    def _render_plotter(self, plotter) -> None:
+        with suppress(Exception):
+            plotter.reset_camera_clipping_range()
+        plotter.render()
 
     def _set_cad_camera(self, plotter, bounds) -> None:
         bounds_array = np.asarray(bounds, dtype=float)

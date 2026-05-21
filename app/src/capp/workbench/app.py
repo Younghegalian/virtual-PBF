@@ -296,6 +296,62 @@ class _VoxelizationWorker(QRunnable):
         self.signals.finished.emit(self.config, grid, grid.data)
 
 
+class _GeometryDeviationWorkerSignals(QObject):
+    finished = Signal(object, int)
+    failed = Signal(str, int)
+    progress = Signal(int, str)
+
+
+class _GeometryDeviationWorker(QRunnable):
+    def __init__(
+        self,
+        stl_path: str,
+        volume,
+        spacing: float,
+        origin: tuple[float, float, float],
+        label: str,
+        result_revision: int,
+    ) -> None:
+        super().__init__()
+        self.stl_path = stl_path
+        self.volume = volume
+        self.spacing = spacing
+        self.origin = origin
+        self.label = label
+        self.result_revision = result_revision
+        self.signals = _GeometryDeviationWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from capp.workbench.preview import (
+                build_geometry_deviation_preview,
+                pack_geometry_deviation_preview,
+            )
+
+            self.signals.progress.emit(0, "Preparing geometry deviation")
+
+            def progress(percent: int, message: str) -> None:
+                self.signals.progress.emit(percent, message)
+
+            preview = pack_geometry_deviation_preview(
+                build_geometry_deviation_preview(
+                    self.stl_path,
+                    self.volume,
+                    spacing=self.spacing,
+                    origin=self.origin,
+                    label=self.label,
+                    progress_callback=progress,
+                )
+            )
+        except Exception as exc:
+            self.signals.failed.emit(str(exc), self.result_revision)
+            return
+
+        self.signals.progress.emit(100, "Geometry deviation ready")
+        self.signals.finished.emit(preview, self.result_revision)
+
+
 class _ModelCalibrationWorkerSignals(QObject):
     finished = Signal(object)
     failed = Signal(str)
@@ -609,10 +665,12 @@ class WorkbenchMainWindow:
         self._last_voxel_preview_data = None
         self._last_voxel_signature = None
         self._loaded_result = None
+        self._result_revision = 0
         self._busy = False
         self._cursor_busy = False
         self._simulation_worker = None
         self._voxelization_worker = None
+        self._geometry_deviation_worker = None
         self._stl_preview_worker = None
         self._last_stl_preview = None
         self._save_outputs_worker = None
@@ -1578,7 +1636,9 @@ class WorkbenchMainWindow:
         result_layout.addWidget(deviation_box)
 
         preview_button = QPushButton("Preview 3D")
+        preview_button.setEnabled(False)
         preview_button.clicked.connect(self._preview_loaded_result)
+        self._result_display_preview_button = preview_button
         result_layout.addWidget(preview_button)
 
         self._slice_label = QLabel("-")
@@ -2970,6 +3030,7 @@ class WorkbenchMainWindow:
                 "path": Path(path),
                 "source_geometry": source_geometry,
             }
+            self._mark_loaded_result_changed()
             self._sync_deviation_stl_from_result()
             self._output_label.setText(str(Path(path).parent))
             self._files_label.setText("\n".join(data.files))
@@ -2998,6 +3059,7 @@ class WorkbenchMainWindow:
             "path": None,
             "source_geometry": result.source_geometry,
         }
+        self._mark_loaded_result_changed()
         self._sync_deviation_stl_from_result()
         self._result_npz_path.setText("")
         self._output_label.setText(f"In memory; target: {output_dir}")
@@ -3009,10 +3071,24 @@ class WorkbenchMainWindow:
             return
         source = None if self._loaded_result is None else self._loaded_result.get("source_geometry")
         self._deviation_stl_path.setText("" if source is None else str(source))
+        self._update_result_action_state()
+
+    def _mark_loaded_result_changed(self) -> None:
+        self._result_revision = int(getattr(self, "_result_revision", 0)) + 1
+        if hasattr(self, "_deviation_summary"):
+            self._deviation_summary.setText("Ready")
+
+    def _update_result_action_state(self) -> None:
+        enabled = (not getattr(self, "_busy", False)) and self._loaded_result is not None
+        if hasattr(self, "_deviation_button"):
+            self._deviation_button.setEnabled(enabled)
+        if hasattr(self, "_result_display_preview_button"):
+            self._result_display_preview_button.setEnabled(enabled)
 
     def _refresh_result_views(self, *_args) -> None:
         if self._loaded_result is None:
             return
+        self._update_result_action_state()
         volume = self._selected_result_volume()
         axis = self._slice_axis.currentText()
         axis_index = {"X": 0, "Y": 1, "Z": 2}[axis]
@@ -3023,9 +3099,14 @@ class WorkbenchMainWindow:
         self._slice_slider.blockSignals(False)
         self._update_result_slice()
 
-    def _preview_loaded_result(self) -> None:
+    def _preview_loaded_result(self, *_args, show_error: bool = True) -> None:
         if self._loaded_result is None:
-            self._QMessageBox.warning(self._window, "Missing result", "Load or run a result first.")
+            if show_error:
+                self._QMessageBox.warning(
+                    self._window,
+                    "Missing result",
+                    "Load or run a result first.",
+                )
             return
         volume = self._selected_result_volume()
         name = self._result_volume_choice.currentText()
@@ -3036,16 +3117,29 @@ class WorkbenchMainWindow:
             preview_volume = volume.astype(bool)
             label = name
         self._append_log(f"Previewing result volume: {label}")
-        self._result_preview.show_voxels(
-            preview_volume,
-            spacing=self._loaded_result["spacing"],
-            origin=self._loaded_result["origin"],
-            label=label,
-        )
+        try:
+            self._result_preview.show_voxels(
+                preview_volume,
+                spacing=self._loaded_result["spacing"],
+                origin=self._loaded_result["origin"],
+                label=label,
+                raise_errors=True,
+            )
+        except Exception as exc:
+            self._append_log(f"Result 3D preview failed: {exc}")
+            if show_error:
+                self._QMessageBox.critical(
+                    self._window,
+                    "Result 3D preview failed",
+                    str(exc),
+                )
 
     def _preview_geometry_deviation(self) -> None:
         if self._loaded_result is None:
             self._QMessageBox.warning(self._window, "Missing result", "Load or run a result first.")
+            return
+        if self._busy:
+            self._append_log("A task is already in progress.")
             return
         stl_text = self._deviation_stl_path.text().strip()
         if not stl_text:
@@ -3066,23 +3160,55 @@ class WorkbenchMainWindow:
         volume = self._selected_result_volume()
         label = self._result_volume_choice.currentText()
         self._append_log(f"Rendering geometry deviation heatmap: {stl_path}")
-        try:
-            metrics = self._result_preview.show_geometry_deviation(
-                stl_path,
-                volume,
-                spacing=self._loaded_result["spacing"],
-                origin=self._loaded_result["origin"],
-                label=label,
-            )
-        except Exception as exc:
-            self._append_log(f"Geometry deviation heatmap failed: {exc}")
-            self._QMessageBox.critical(self._window, "Geometry deviation failed", str(exc))
+        self._deviation_summary.setText("Preparing geometry deviation...")
+        self._set_busy(True, "Preparing geometry deviation...", task="geometry_deviation")
+        worker = _GeometryDeviationWorker(
+            str(stl_path),
+            volume,
+            float(self._loaded_result["spacing"]),
+            tuple(float(v) for v in self._loaded_result["origin"]),
+            label,
+            int(self._result_revision),
+        )
+        worker.signals.progress.connect(self._set_geometry_deviation_progress)
+        worker.signals.finished.connect(self._geometry_deviation_finished)
+        worker.signals.failed.connect(self._geometry_deviation_failed)
+        self._geometry_deviation_worker = worker
+        self._thread_pool.start(worker)
+
+    def _set_geometry_deviation_progress(self, percent: int, message: str) -> None:
+        self._set_task_progress(percent, message)
+        if hasattr(self, "_deviation_summary"):
+            self._deviation_summary.setText(message)
+
+    def _geometry_deviation_finished(self, preview, result_revision: int) -> None:
+        self._geometry_deviation_worker = None
+        if result_revision != self._result_revision:
+            self._append_log("Discarded stale geometry deviation for a previous result.")
+            self._set_busy(False, "Stale geometry deviation discarded")
             return
+        try:
+            self._result_preview.show_geometry_deviation_preview(preview)
+        except Exception as exc:
+            self._geometry_deviation_failed(str(exc))
+            return
+
+        metrics = preview.metrics
+        alignment = preview.alignment_offset
+        alignment_text = ""
+        if max(abs(value) for value in alignment) > 1e-9:
+            alignment_text = (
+                f"; aligned origin by {alignment[0]:.4g}, "
+                f"{alignment[1]:.4g}, {alignment[2]:.4g} mm"
+            )
         self._deviation_summary.setText(
             "mean |d| "
             f"{metrics['mean_abs_mm']:.4g} mm, p95 {metrics['p95_abs_mm']:.4g} mm, "
             f"max |d| {metrics['max_abs_mm']:.4g} mm, signed "
             f"{metrics['min_signed_mm']:.4g} to {metrics['max_signed_mm']:.4g} mm"
+            f", color scale -{metrics['negative_scale_mm']:.4g}/"
+            f"+{metrics['positive_scale_mm']:.4g} mm"
+            f"{alignment_text}"
         )
         self._append_log(
             "Geometry deviation ready: "
@@ -3090,6 +3216,18 @@ class WorkbenchMainWindow:
             f"p95={metrics['p95_abs_mm']:.4g} mm, "
             f"max |d|={metrics['max_abs_mm']:.4g} mm"
         )
+        self._set_busy(False, "Geometry deviation ready")
+
+    def _geometry_deviation_failed(self, message: str, result_revision: int | None = None) -> None:
+        self._geometry_deviation_worker = None
+        if result_revision is not None and result_revision != self._result_revision:
+            self._append_log(f"Discarded stale geometry deviation failure: {message}")
+            self._set_busy(False, "Stale geometry deviation discarded")
+            return
+        self._deviation_summary.setText(f"Failed: {message}")
+        self._append_log(f"Geometry deviation heatmap failed: {message}")
+        self._set_busy(False, "Geometry deviation failed")
+        self._QMessageBox.critical(self._window, "Geometry deviation failed", message)
 
     def _update_result_slice(self, *_args) -> None:
         if self._loaded_result is None:
@@ -4343,7 +4481,7 @@ class WorkbenchMainWindow:
             self._save_result_button.setEnabled(True)
             self._save_loaded_result_button.setEnabled(True)
             self._preview_result()
-            self._preview_loaded_result()
+            self._preview_loaded_result(show_error=False)
             self._append_log("Complete")
             self._append_log(f"Out-of-CAD voxels: {outside_voxels}")
             self._navigation.setCurrentRow(1)
@@ -4446,8 +4584,11 @@ class WorkbenchMainWindow:
             self._save_loaded_result_button.setText(
                 "Saving..." if busy and task == "save" else "Save Current Result"
             )
+        self._update_result_action_state()
         if hasattr(self, "_deviation_button"):
-            self._deviation_button.setEnabled((not busy) and self._loaded_result is not None)
+            self._deviation_button.setText(
+                "Computing..." if busy and task == "geometry_deviation" else "Show Deviation Heatmap"
+            )
         if hasattr(self, "_run_calibration_button"):
             self._run_calibration_button.setEnabled(not busy)
             self._run_calibration_button.setText(

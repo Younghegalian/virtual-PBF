@@ -1,7 +1,16 @@
 import numpy as np
 import pytest
 
-from capp.workbench.preview import PreviewPane
+from capp.workbench.preview import (
+    PreviewPane,
+    _align_surface_to_source_origin,
+    _deviation_color_limits,
+    _deviation_color_values_mm,
+    _deviation_jet_colormap,
+    build_geometry_deviation_preview,
+    pack_geometry_deviation_preview,
+    unpack_geometry_deviation_preview,
+)
 
 
 def test_paraview_volume_keeps_large_volume_full_resolution():
@@ -107,7 +116,131 @@ def test_geometry_deviation_surface_reports_near_zero_for_matching_box():
     )
     original = pv.Box(bounds=(2.0, 6.0, 2.0, 6.0, 2.0, 6.0)).triangulate()
 
-    _surface, metrics = PreviewPane._geometry_deviation_surface(pane, printed, original)
+    surface, metrics = PreviewPane._geometry_deviation_surface(pane, printed, original)
 
     assert metrics["sample_count"] > 0
     assert metrics["max_abs_mm"] < 1e-5
+    assert "Deviation color (mm)" in surface.point_data
+
+
+def test_deviation_color_limits_use_mm_ranges_independently():
+    metrics = {"negative_scale_mm": 2.0, "positive_scale_mm": 4.0}
+
+    assert _deviation_color_limits(metrics, 1.0) == (-2.0, 4.0)
+    assert _deviation_color_limits({"negative_scale_mm": 2.0}, 1.0) == (-2.0, 0.0)
+    assert _deviation_color_limits({"positive_scale_mm": 4.0}, 1.0) == (0.0, 4.0)
+
+
+def test_deviation_jet_colormap_keeps_zero_color_constant():
+    both = _deviation_jet_colormap(2.0, 4.0)
+    positive = _deviation_jet_colormap(0.0, 4.0)
+    negative = _deviation_jet_colormap(2.0, 0.0)
+
+    assert both(2.0 / 6.0) == pytest.approx(positive(0.0))
+    assert both(2.0 / 6.0) == pytest.approx(negative(1.0))
+
+
+def test_deviation_color_values_keep_mm_scale_and_zero_band():
+    values = _deviation_color_values_mm(
+        np.asarray([-2.0, -0.01, 0.0, 0.01, 4.0]),
+        zero_tolerance=0.02,
+    )
+
+    assert values.tolist() == pytest.approx([-2.0, 0.0, 0.0, 0.0, 4.0])
+
+
+def test_geometry_deviation_alignment_restores_legacy_normalized_origin():
+    pv = pytest.importorskip("pyvista")
+    pane = object.__new__(PreviewPane)
+    volume = np.zeros((6, 6, 4), dtype=np.float32)
+    volume[2:4, 2:4, 0:2] = 1.0
+    printed = PreviewPane._make_isosurface_mesh(
+        pane,
+        pv,
+        volume,
+        spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+    )
+    original = pv.Box(bounds=(10.0, 12.0, 20.0, 22.0, 30.0, 32.0)).triangulate()
+
+    aligned, offset = _align_surface_to_source_origin(
+        printed,
+        original,
+        voxel_spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+    )
+
+    assert offset == (8.0, 18.0, 30.0)
+    assert aligned.bounds == pytest.approx(original.bounds)
+
+
+def test_geometry_deviation_alignment_keeps_source_origin_in_place():
+    pv = pytest.importorskip("pyvista")
+    pane = object.__new__(PreviewPane)
+    volume = np.zeros((6, 6, 4), dtype=np.float32)
+    volume[2:4, 2:4, 0:2] = 1.0
+    original = pv.Box(bounds=(10.0, 12.0, 20.0, 22.0, 30.0, 32.0)).triangulate()
+    printed = PreviewPane._make_isosurface_mesh(
+        pane,
+        pv,
+        volume,
+        spacing=1.0,
+        origin=(8.0, 18.0, 30.0),
+    )
+
+    aligned, offset = _align_surface_to_source_origin(
+        printed,
+        original,
+        voxel_spacing=1.0,
+        origin=(8.0, 18.0, 30.0),
+    )
+
+    assert offset == (0.0, 0.0, 0.0)
+    assert aligned is printed
+    assert aligned.bounds == pytest.approx(original.bounds)
+
+
+def test_geometry_deviation_build_aligns_legacy_result_to_source_stl(tmp_path):
+    pytest.importorskip("pyvista")
+    trimesh = pytest.importorskip("trimesh")
+    stl_path = tmp_path / "box.stl"
+    mesh = trimesh.creation.box(extents=(2.0, 2.0, 2.0))
+    mesh.apply_translation((11.0, 21.0, 31.0))
+    mesh.export(stl_path)
+    volume = np.zeros((6, 6, 4), dtype=np.float32)
+    volume[2:4, 2:4, 0:2] = 1.0
+
+    preview = build_geometry_deviation_preview(
+        stl_path,
+        volume,
+        spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+    )
+
+    assert preview.alignment_offset == (8.0, 18.0, 30.0)
+    assert preview.metrics["sample_count"] > 0
+    assert preview.metrics["max_abs_mm"] < 1e-5
+
+
+def test_geometry_deviation_preview_payload_round_trip(tmp_path):
+    pytest.importorskip("pyvista")
+    trimesh = pytest.importorskip("trimesh")
+    stl_path = tmp_path / "box.stl"
+    mesh = trimesh.creation.box(extents=(2.0, 2.0, 2.0))
+    mesh.apply_translation((1.0, 1.0, 1.0))
+    mesh.export(stl_path)
+    volume = np.zeros((6, 6, 4), dtype=np.float32)
+    volume[2:4, 2:4, 0:2] = 1.0
+    preview = build_geometry_deviation_preview(
+        stl_path,
+        volume,
+        spacing=1.0,
+        origin=(-2.0, -2.0, 0.0),
+    )
+
+    restored = unpack_geometry_deviation_preview(pack_geometry_deviation_preview(preview))
+
+    assert restored.original_mesh.n_points == preview.original_mesh.n_points
+    assert restored.deviation_surface.n_points == preview.deviation_surface.n_points
+    assert restored.metrics == preview.metrics
+    assert "Deviation color (mm)" in restored.deviation_surface.point_data

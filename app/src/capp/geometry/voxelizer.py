@@ -8,6 +8,8 @@ import numpy as np
 from capp.domain import VoxelGrid
 
 ProgressCallback = Callable[[int, str], None]
+VOXEL_LOWER_PADDING_CELLS = (2, 2, 0)
+VOXEL_UPPER_PADDING_CELLS = (2, 2, 2)
 
 
 def voxelize_mesh(
@@ -20,18 +22,25 @@ def voxelize_mesh(
         raise ValueError("Voxel spacing must be positive.")
 
     _report_progress(progress_callback, 0, "Preparing voxelization")
-    data = _voxelize_stl_with_vtk(Path(path), spacing, progress_callback)
+    data, source_min = _voxelize_stl_with_vtk(Path(path), spacing, progress_callback)
     _report_progress(progress_callback, 96, "Applying virtual printing padding")
     data = _matlab_virtual_printing_padding(data)
+    origin_array = np.asarray(source_min, dtype=np.float64) - (
+        np.asarray(VOXEL_LOWER_PADDING_CELLS, dtype=np.float64) * float(spacing)
+    )
     _report_progress(progress_callback, 100, "Voxelization complete")
-    return VoxelGrid(data=data, spacing=float(spacing), origin=(0.0, 0.0, 0.0))
+    return VoxelGrid(
+        data=data,
+        spacing=float(spacing),
+        origin=tuple(float(value) for value in origin_array),
+    )
 
 
 def _voxelize_stl_with_vtk(
     path: Path,
     spacing: float,
     progress_callback: ProgressCallback | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, tuple[float, float, float]]:
     import vtk
     from vtk.util.numpy_support import vtk_to_numpy
 
@@ -66,6 +75,7 @@ def _voxelize_stl_with_vtk(
 
     report(18, "Normalizing mesh bounds")
     bounds = poly.GetBounds()
+    source_min = (float(bounds[0]), float(bounds[2]), float(bounds[4]))
     transform = vtk.vtkTransform()
     transform.Translate(-bounds[0], -bounds[2], -bounds[4])
     transform_filter = vtk.vtkTransformPolyDataFilter()
@@ -115,11 +125,20 @@ def _voxelize_stl_with_vtk(
     report(94, "Transferring voxel image")
     scalars = image_stencil.GetOutput().GetPointData().GetScalars()
     flat = vtk_to_numpy(scalars).astype(bool, copy=False)
-    return flat.reshape((resolution[2], resolution[1], resolution[0])).transpose(2, 1, 0)
+    data = flat.reshape((resolution[2], resolution[1], resolution[0])).transpose(2, 1, 0)
+    return data, source_min
 
 
 def _matlab_virtual_printing_padding(data: np.ndarray) -> np.ndarray:
-    return np.pad(data, ((2, 2), (2, 2), (0, 2)), mode="constant", constant_values=False)
+    pad_width = tuple(
+        (lower, upper)
+        for lower, upper in zip(
+            VOXEL_LOWER_PADDING_CELLS,
+            VOXEL_UPPER_PADDING_CELLS,
+            strict=True,
+        )
+    )
+    return np.pad(data, pad_width, mode="constant", constant_values=False)
 
 
 def _report_progress(
