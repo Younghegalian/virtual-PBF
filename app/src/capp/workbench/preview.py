@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+DEVIATION_HEATMAP_SCALE_MM = 1.0
+
 
 def compute_overhang_angles(normals: NDArray) -> NDArray[np.float32]:
     normal_array = np.asarray(normals, dtype=np.float32)
@@ -247,16 +249,8 @@ def _deviation_color_values_mm(
 
 
 def _deviation_color_limits(metrics: dict[str, float], fallback_scale: float) -> tuple[float, float]:
-    negative_scale = max(float(metrics.get("negative_scale_mm", 0.0)), 0.0)
-    positive_scale = max(float(metrics.get("positive_scale_mm", 0.0)), 0.0)
-    if negative_scale > 0.0 and positive_scale > 0.0:
-        return -negative_scale, positive_scale
-    if negative_scale > 0.0:
-        return -negative_scale, 0.0
-    if positive_scale > 0.0:
-        return 0.0, positive_scale
-    fallback = max(float(fallback_scale), 1e-9)
-    return -fallback, fallback
+    scale = DEVIATION_HEATMAP_SCALE_MM
+    return -scale, scale
 
 
 def _deviation_jet_colormap(negative_scale: float, positive_scale: float):
@@ -282,7 +276,7 @@ def _deviation_jet_colormap(negative_scale: float, positive_scale: float):
         colors = [(0.0, neutral), (0.5, jet(0.75)), (1.0, jet(1.0))]
     else:
         colors = [(0.0, jet(0.0)), (0.5, neutral), (1.0, jet(1.0))]
-    return LinearSegmentedColormap.from_list("deviation_jet_mm", colors, N=256)
+    return LinearSegmentedColormap.from_list("deviation_jet_mm", colors, N=257)
 
 
 class PreviewPane:
@@ -586,8 +580,8 @@ class PreviewPane:
                 preview.deviation_surface,
                 scalars="Deviation color (mm)",
                 cmap=_deviation_jet_colormap(
-                    metrics["negative_scale_mm"],
-                    metrics["positive_scale_mm"],
+                    DEVIATION_HEATMAP_SCALE_MM,
+                    DEVIATION_HEATMAP_SCALE_MM,
                 ),
                 clim=color_limits,
                 smooth_shading=True,
@@ -629,8 +623,8 @@ class PreviewPane:
                 offset = preview.alignment_offset
                 suffix = f"{suffix} aligned {offset[0]:.4g}, {offset[1]:.4g}, {offset[2]:.4g} mm"
             suffix = (
-                f"{suffix} scale -{metrics['negative_scale_mm']:.4g}/"
-                f"+{metrics['positive_scale_mm']:.4g} mm"
+                f"{suffix} scale -{DEVIATION_HEATMAP_SCALE_MM:g}/"
+                f"+{DEVIATION_HEATMAP_SCALE_MM:g} mm"
             )
             self._title.setText(
                 "Geometry Deviation: "

@@ -68,7 +68,7 @@ Generated library contents are ignored by git.
 ## Current Status
 
 - STL loading, voxelization, preview, simulation execution, and NPZ/VTK export are present.
-- CPU reference, native CPU, and CUDA backend selection/validation are exposed in the workbench.
+- Basic, C++ vectorized, and GPU CUDA backend selection/validation are exposed in the workbench.
 - Model Calibration runs in memory first, then saves requested outputs under the active preset.
 - Machine parameter maps can be generated, saved, previewed as contours, and listed by preset name.
 - Applying saved machine maps as spatial solver bias is still a pending hook; generated presets are

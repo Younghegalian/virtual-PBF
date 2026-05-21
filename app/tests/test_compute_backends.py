@@ -18,7 +18,16 @@ def test_cpu_reference_backend_is_always_available():
     statuses = {status.backend: status for status in solver_backend_statuses()}
 
     assert statuses[SolverBackend.CPU_REFERENCE].available is True
+    assert statuses[SolverBackend.CPU_REFERENCE].label == "Basic"
     assert validate_solver_backend(SolverBackend.CPU_REFERENCE).available is True
+
+
+def test_solver_backend_labels_are_user_facing():
+    statuses = {status.backend: status for status in solver_backend_statuses()}
+
+    assert statuses[SolverBackend.CPU_REFERENCE].label == "Basic"
+    assert statuses[SolverBackend.CPU_NATIVE].label == "C++ vectorized"
+    assert statuses[SolverBackend.CUDA].label == "GPU CUDA"
 
 
 def test_cupy_environment_prefers_bundled_runtime(monkeypatch, tmp_path):

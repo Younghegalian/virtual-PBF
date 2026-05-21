@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from capp.domain import VoxelGrid
 from capp.workbench.app import (
@@ -11,10 +12,12 @@ from capp.workbench.app import (
     _machine_map_preset_output_dir,
     _machine_preset_folder,
     _model_calibration_preset_output_dir,
+    _orientation_label,
+    _oriented_geometry_path,
     _roi_outline_rgb,
     _roi_overlay_rgb,
-    _write_generated_support_grid_cache,
     _workbench_colormap,
+    _write_generated_support_grid_cache,
 )
 from capp.workbench.preview import PreviewPane
 
@@ -178,6 +181,30 @@ def test_model_calibration_output_dir_uses_preset_folder(tmp_path):
     )
 
 
+def test_oriented_geometry_path_exports_rotated_stl(tmp_path):
+    trimesh = pytest.importorskip("trimesh")
+    source = tmp_path / "part.stl"
+    trimesh.creation.box(extents=(2.0, 4.0, 6.0)).export(source)
+
+    oriented = _oriented_geometry_path(source, tmp_path / "out", (90.0, 0.0, 0.0))
+    loaded = trimesh.load_mesh(oriented, process=False)
+
+    assert oriented != source.resolve()
+    assert oriented.parent.name == "oriented_geometry"
+    assert _orientation_label((90.0, 0.0, 0.0)) in oriented.name
+    assert np.allclose(loaded.extents, (2.0, 6.0, 4.0))
+
+
+def test_oriented_geometry_path_returns_source_for_identity(tmp_path):
+    source = tmp_path / "part.stl"
+    source.write_text("solid part\nendsolid part\n", encoding="utf-8")
+
+    assert (
+        _oriented_geometry_path(source, tmp_path / "out", (360.0, 0.0, 0.0))
+        == source.resolve()
+    )
+
+
 def test_geometry_deviation_button_updates_after_result_sync(tmp_path):
     source_geometry = tmp_path / "part.stl"
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
@@ -233,6 +260,33 @@ def test_selected_result_volume_can_hide_support_mask():
 
     view._result_volume_choice.text = "Probability"
     selected_probability = view._selected_result_volume()
+
+    assert selected_probability[0, 0, 0] == 0
+    assert selected_probability[1, 1, 1] == 100
+
+
+def test_geometry_deviation_volume_always_removes_support_mask():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    binary = np.ones((2, 2, 2), dtype=bool)
+    probability = np.full((2, 2, 2), 100, dtype=np.uint8)
+    support_mask = np.zeros((2, 2, 2), dtype=bool)
+    support_mask[0, 0, 0] = True
+    view._loaded_result = {
+        "binary": binary,
+        "probability": probability,
+        "voxel": binary,
+        "support_mask": support_mask,
+    }
+    view._result_hide_support = _CheckProbe(checked=False)
+    view._result_volume_choice = _ComboProbe("Binary")
+
+    selected = view._selected_result_volume_without_support()
+
+    assert not bool(selected[0, 0, 0])
+    assert bool(selected[1, 1, 1])
+
+    view._result_volume_choice.text = "Probability"
+    selected_probability = view._selected_result_volume_without_support()
 
     assert selected_probability[0, 0, 0] == 0
     assert selected_probability[1, 1, 1] == 100
@@ -307,9 +361,9 @@ def test_voxelization_preview_passes_support_mask():
 
 def test_backend_status_line_is_compact():
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    status = type("StatusProbe", (), {"label": "PBF X", "available": False})()
+    status = type("StatusProbe", (), {"label": "GPU CUDA", "available": False})()
 
-    assert view._backend_status_line(status) == "PBF X: unavailable"
+    assert view._backend_status_line(status) == "GPU CUDA: unavailable"
     assert "\n" not in view._backend_status_line(status)
 
 
@@ -378,7 +432,7 @@ def test_generated_support_is_inactive_until_button_result_matches(tmp_path):
     assert view._active_generated_support_options() == options
 
 
-def test_generated_support_path_is_used_even_when_options_are_stale(tmp_path):
+def test_generated_support_path_is_ignored_when_options_are_stale(tmp_path):
     support = tmp_path / "support.stl"
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
@@ -390,26 +444,34 @@ def test_generated_support_path_is_used_even_when_options_are_stale(tmp_path):
     view._last_generated_support_type = "X surface support"
     view._last_generated_support_signature = None
 
-    assert view._generated_support_path_and_voxel_type() == (support, "Line support")
+    assert view._generated_support_path_and_voxel_type() is None
 
 
-def test_generated_support_path_uses_sidecar_type_when_state_is_missing(tmp_path):
+def test_generated_support_path_uses_active_generation_options(tmp_path):
+    part = tmp_path / "part.stl"
     support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
-    data = np.ones((1, 1, 1), dtype=bool)
-    _write_generated_support_grid_cache(
-        support,
-        VoxelGrid(data, spacing=0.5, support_mask=data),
-        "X surface support",
-    )
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
     view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
-    view._support_geometry = _TextFieldProbe(str(support))
-    view._support_type = _ComboProbe("Volume support")
-    view._last_generated_support_path = None
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("1.0")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("X surface support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
     view._last_generated_support_type = None
-    view._last_generated_support_signature = None
+    options = view._support_generation_from_form()
+    view._last_generated_support_signature = view._support_generation_signature(
+        part,
+        1.0,
+        options,
+    )
 
     assert view._generated_support_path_and_voxel_type() == (support, "Line support")
 

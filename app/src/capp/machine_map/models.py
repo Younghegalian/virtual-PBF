@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import csv
-from html import unescape
 import json
 import re
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from html import unescape
 from pathlib import Path
 from shutil import copy2
 from time import perf_counter
@@ -16,7 +16,13 @@ import numpy as np
 from scipy.interpolate import RBFInterpolator
 
 from capp.calibration.rmc import RmcParameterSet
-from capp.domain import SolverParameters, VoxelGrid
+from capp.domain import (
+    MachineBiasMode,
+    MachineMapCoordinateMode,
+    NeighborhoodModel,
+    SolverParameters,
+    VoxelGrid,
+)
 
 PARAMETER_NAMES = ("NX", "PX", "NY", "PY", "EPS", "IDP")
 _XLSX_NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -25,16 +31,161 @@ ProgressCallback = Callable[[int, str], None]
 
 def apply_machine_parameter_map(
     parameters: SolverParameters,
-    _grid: VoxelGrid,
+    grid: VoxelGrid,
 ) -> SolverParameters:
-    """Return mapped solver parameters when a preset is available.
+    """Return solver parameters with a selected machine map sampled onto the part grid."""
 
-    The restored strict snapshot keeps this hook so virtual printing can run
-    even when no machine-map preset is selected. Full spatial map application
-    can be reattached on top of this stable launch path.
-    """
+    if parameters.machine_bias is MachineBiasMode.NONE or parameters.machine_map_path is None:
+        return parameters
+    if parameters.machine_bias is not MachineBiasMode.PRESET:
+        raise ValueError(f"Unsupported machine bias mode: {parameters.machine_bias}")
+    if parameters.neighborhood is not NeighborhoodModel.DIRECTIONAL_VON_NEUMANN:
+        raise ValueError("Machine parameter maps require DirectionalVN.")
 
-    return parameters
+    map_path = Path(parameters.machine_map_path)
+    if not map_path.exists():
+        raise FileNotFoundError(f"Machine parameter map not found: {map_path}")
+
+    payload = _load_machine_map_payload(map_path)
+    x_norm, y_norm = _machine_map_sample_coordinates(parameters, grid, payload.normalizer)
+    sampled = {
+        name: _sample_machine_map_grid(payload.parameters[name], x_norm, y_norm)
+        for name in PARAMETER_NAMES
+    }
+
+    return replace(
+        parameters,
+        machine_bias=MachineBiasMode.NONE,
+        spatial_current_coefficients=(
+            sampled["NX"],
+            sampled["PX"],
+            sampled["NY"],
+            sampled["PY"],
+        ),
+        spatial_min_bias=sampled["EPS"],
+        spatial_initial_deviation=sampled["IDP"],
+    )
+
+
+@dataclass(frozen=True)
+class MachineMapPayload:
+    parameters: dict[str, np.ndarray]
+    normalizer: CoordinateNormalizer
+
+
+def _load_machine_map_payload(path: Path) -> MachineMapPayload:
+    with np.load(path, allow_pickle=False) as data:
+        missing = [name for name in PARAMETER_NAMES if name not in data.files]
+        if missing:
+            raise ValueError(f"Machine parameter map is missing grids: {', '.join(missing)}")
+        parameter_grids = {
+            name: np.asarray(data[name], dtype=np.float32)
+            for name in PARAMETER_NAMES
+        }
+    return MachineMapPayload(
+        parameters=parameter_grids,
+        normalizer=_read_machine_map_normalizer(path),
+    )
+
+
+def _read_machine_map_normalizer(path: Path) -> CoordinateNormalizer:
+    metadata_path = path.with_suffix(".json")
+    if not metadata_path.exists():
+        return CoordinateNormalizer()
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        raw = payload.get("normalizer") or {}
+        return CoordinateNormalizer(
+            x_offset=float(raw.get("x_offset", 125.0)),
+            y_offset=float(raw.get("y_offset", 125.0)),
+            x_range=float(raw.get("x_range", 250.0)),
+            y_range=float(raw.get("y_range", 250.0)),
+        )
+    except Exception:
+        return CoordinateNormalizer()
+
+
+def _machine_map_sample_coordinates(
+    parameters: SolverParameters,
+    grid: VoxelGrid,
+    normalizer: CoordinateNormalizer,
+) -> tuple[np.ndarray, np.ndarray]:
+    spacing = float(grid.spacing)
+    shape = np.asarray(grid.shape[:2], dtype=np.float64)
+    origin = np.asarray(grid.origin[:2], dtype=np.float64)
+    x_axis = origin[0] + (np.arange(grid.shape[0], dtype=np.float64) + 0.5) * spacing
+    y_axis = origin[1] + (np.arange(grid.shape[1], dtype=np.float64) + 0.5) * spacing
+    x_world, y_world = np.meshgrid(x_axis, y_axis, indexing="ij")
+    part_center, part_min, part_max = _part_xy_frame(grid, origin, shape, spacing)
+
+    mode = parameters.machine_map_coordinate_mode
+    if mode is MachineMapCoordinateMode.PART_CENTER:
+        machine_x = x_world - part_center[0] + parameters.machine_map_position[0]
+        machine_y = y_world - part_center[1] + parameters.machine_map_position[1]
+    elif mode is MachineMapCoordinateMode.EXPLICIT_BOUNDS:
+        if parameters.machine_map_bounds is None:
+            raise ValueError("Explicit machine map bounds are required.")
+        x_min, x_max, y_min, y_max = parameters.machine_map_bounds
+        x_fraction = _safe_fraction(x_world, part_min[0], part_max[0])
+        y_fraction = _safe_fraction(y_world, part_min[1], part_max[1])
+        machine_x = x_min + x_fraction * (x_max - x_min)
+        machine_y = y_min + y_fraction * (y_max - y_min)
+    elif mode is MachineMapCoordinateMode.FULL_BASE_PLATE:
+        machine_x = x_world
+        machine_y = y_world
+    else:
+        raise ValueError(f"Unsupported machine map coordinate mode: {mode}")
+
+    x_norm, y_norm = normalizer.normalize(machine_x, machine_y)
+    return np.clip(x_norm, 0.0, 1.0), np.clip(y_norm, 0.0, 1.0)
+
+
+def _part_xy_frame(
+    grid: VoxelGrid,
+    origin: np.ndarray,
+    shape: np.ndarray,
+    spacing: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    part_mask = np.asarray(grid.data, dtype=bool) & ~np.asarray(grid.support_mask, dtype=bool)
+    occupied = np.argwhere(np.any(part_mask, axis=2))
+    if occupied.size == 0:
+        world_min = origin + 0.5 * spacing
+        world_max = origin + (shape - 0.5) * spacing
+    else:
+        lower = occupied.min(axis=0).astype(np.float64)
+        upper = occupied.max(axis=0).astype(np.float64)
+        world_min = origin + (lower + 0.5) * spacing
+        world_max = origin + (upper + 0.5) * spacing
+    center = (world_min + world_max) * 0.5
+    return center, world_min, world_max
+
+
+def _safe_fraction(values: np.ndarray, lower: float, upper: float) -> np.ndarray:
+    span = float(upper) - float(lower)
+    if abs(span) <= 1e-12:
+        return np.full_like(values, 0.5, dtype=np.float64)
+    return (values - float(lower)) / span
+
+
+def _sample_machine_map_grid(
+    values: np.ndarray,
+    x_normalized: np.ndarray,
+    y_normalized: np.ndarray,
+) -> np.ndarray:
+    from scipy import ndimage
+
+    grid_values = np.asarray(values, dtype=np.float32)
+    if grid_values.ndim != 2:
+        raise ValueError("Machine parameter map grids must be 2D.")
+    row = np.asarray(y_normalized, dtype=np.float64) * (grid_values.shape[0] - 1)
+    column = np.asarray(x_normalized, dtype=np.float64) * (grid_values.shape[1] - 1)
+    sampled = ndimage.map_coordinates(
+        grid_values,
+        [row.ravel(), column.ravel()],
+        order=1,
+        mode="nearest",
+    )
+    return sampled.reshape(x_normalized.shape).astype(np.float32, copy=False)
 
 
 @dataclass(frozen=True)
@@ -107,10 +258,11 @@ class CoordinateNormalizer:
     def normalize(self, x: float, y: float) -> tuple[float, float]:
         if self.x_range == 0.0 or self.y_range == 0.0:
             raise ValueError("Coordinate ranges must be non-zero.")
-        return (
-            (float(x) + self.x_offset) / self.x_range,
-            (float(y) + self.y_offset) / self.y_range,
-        )
+        x_normalized = (np.asarray(x, dtype=np.float64) + self.x_offset) / self.x_range
+        y_normalized = (np.asarray(y, dtype=np.float64) + self.y_offset) / self.y_range
+        if x_normalized.ndim == 0 and y_normalized.ndim == 0:
+            return float(x_normalized), float(y_normalized)
+        return x_normalized, y_normalized
 
 
 class MachineParameterMap:
@@ -463,7 +615,11 @@ def read_machine_parameter_map_metadata(path: str | Path) -> MachineParameterMap
                 spacing = raw_spacing
         sample_count = int(data["sample_names"].shape[0]) if "sample_names" in data.files else 0
         resolution = int(data["NX"].shape[0]) if "NX" in data.files else 0
-        order = tuple(str(name) for name in data["parameter_names"]) if "parameter_names" in data.files else PARAMETER_NAMES
+        order = (
+            tuple(str(name) for name in data["parameter_names"])
+            if "parameter_names" in data.files
+            else PARAMETER_NAMES
+        )
     return MachineParameterMapMetadata(
         path=map_path,
         preset_name=str(preset),

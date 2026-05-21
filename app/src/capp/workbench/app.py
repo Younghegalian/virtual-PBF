@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,116 @@ def _model_calibration_preset_output_dir(library_root: str | Path, preset_name: 
 
 def _machine_map_preset_output_dir(library_root: str | Path, preset_name: str) -> Path:
     return _machine_preset_folder(library_root, preset_name) / "map"
+
+
+def _normalize_orientation_angles(angles: tuple[float, float, float]) -> tuple[float, float, float]:
+    normalized = []
+    for angle in angles:
+        value = ((float(angle) + 180.0) % 360.0) - 180.0
+        if abs(value) < 1e-9:
+            value = 0.0
+        normalized.append(value)
+    return tuple(normalized)
+
+
+def _orientation_is_identity(angles: tuple[float, float, float]) -> bool:
+    return all(abs(value) < 1e-9 for value in _normalize_orientation_angles(angles))
+
+
+def _orientation_label(angles: tuple[float, float, float]) -> str:
+    normalized = _normalize_orientation_angles(angles)
+    if _orientation_is_identity(normalized):
+        return "as_loaded"
+
+    tokens = []
+    for axis, value in zip(("rx", "ry", "rz"), normalized, strict=True):
+        if abs(value) < 1e-9:
+            continue
+        sign = "p" if value >= 0 else "m"
+        text = f"{abs(value):g}".replace(".", "p")
+        tokens.append(f"{axis}{sign}{text}")
+    return "_".join(tokens)
+
+
+def _orientation_cache_path(
+    source_path: str | Path,
+    output_dir: str | Path,
+    angles: tuple[float, float, float],
+) -> Path:
+    source = Path(source_path).resolve()
+    stat = source.stat()
+    normalized = _normalize_orientation_angles(angles)
+    digest = hashlib.sha1(
+        "|".join(
+            [
+                str(source),
+                str(stat.st_mtime_ns),
+                str(stat.st_size),
+                ",".join(f"{value:.9g}" for value in normalized),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", source.stem).strip("._-") or "part"
+    return (
+        Path(output_dir)
+        / "oriented_geometry"
+        / f"{safe_stem}_{_orientation_label(normalized)}_{digest}.stl"
+    )
+
+
+def _oriented_geometry_path(
+    source_path: str | Path,
+    output_dir: str | Path,
+    angles: tuple[float, float, float],
+) -> Path:
+    source = Path(source_path).resolve()
+    normalized = _normalize_orientation_angles(angles)
+    if _orientation_is_identity(normalized):
+        return source
+
+    target = _orientation_cache_path(source, output_dir, normalized)
+    if target.exists():
+        return target
+
+    import numpy as np
+    import trimesh
+
+    loaded = trimesh.load_mesh(source, process=False)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [
+            geom
+            for geom in loaded.geometry.values()
+            if isinstance(geom, trimesh.Trimesh) and len(geom.faces) > 0
+        ]
+        if not meshes:
+            raise ValueError(f"No mesh geometry found in {source}.")
+        loaded = trimesh.util.concatenate(meshes)
+    if not isinstance(loaded, trimesh.Trimesh):
+        raise TypeError(f"Unsupported mesh type from {source}: {type(loaded)!r}")
+
+    mesh = loaded.copy()
+    center = np.asarray(mesh.bounds, dtype=np.float64).mean(axis=0)
+    transform = np.eye(4, dtype=np.float64)
+    axes = (
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float64),
+        np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+        np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+    )
+    for angle, axis in zip(normalized, axes, strict=True):
+        if abs(angle) < 1e-9:
+            continue
+        transform = (
+            trimesh.transformations.rotation_matrix(
+                np.deg2rad(angle),
+                axis,
+                point=center,
+            )
+            @ transform
+        )
+    mesh.apply_transform(transform)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mesh.export(target)
+    return target
 
 
 def _workbench_colormap(values):
@@ -1525,6 +1636,26 @@ class WorkbenchMainWindow:
             self._file_row(self._part_geometry, self._browse_part),
         )
 
+        orientation_row = QHBoxLayout()
+        orientation_row.setContentsMargins(0, 0, 0, 0)
+        orientation_row.setSpacing(4)
+        self._orientation_x = QLineEdit("0")
+        self._orientation_y = QLineEdit("0")
+        self._orientation_z = QLineEdit("0")
+        self._orientation_fields = [
+            self._orientation_x,
+            self._orientation_y,
+            self._orientation_z,
+        ]
+        for label_text, field in zip(("X", "Y", "Z"), self._orientation_fields, strict=True):
+            label = QLabel(label_text)
+            field.setMaximumWidth(64)
+            field.textChanged.connect(self._geometry_orientation_changed)
+            field.editingFinished.connect(self._preview_part_geometry)
+            orientation_row.addWidget(label)
+            orientation_row.addWidget(field)
+        geometry_form.addRow("Orientation (deg)", orientation_row)
+
         self._support_options_toggle = QToolButton()
         self._support_options_toggle.setObjectName("SupportOptionsToggle")
         self._support_options_toggle.setCheckable(True)
@@ -2772,14 +2903,61 @@ class WorkbenchMainWindow:
             self._estimate_grid_spacing_for_path(path)
             self._preview_part_geometry()
 
+    def _geometry_orientation_angles(self) -> tuple[float, float, float]:
+        fields = getattr(self, "_orientation_fields", None)
+        if not fields:
+            return (0.0, 0.0, 0.0)
+        values = []
+        for label, field in zip(("X", "Y", "Z"), fields, strict=True):
+            text = field.text().strip()
+            if not text:
+                values.append(0.0)
+                continue
+            values.append(self._float(field, f"Orientation {label}"))
+        return _normalize_orientation_angles(tuple(values))
+
+    def _geometry_processing_output_dir(self) -> Path:
+        output_widget = getattr(self, "_output_dir", None)
+        text = output_widget.text().strip() if output_widget is not None else ""
+        return Path(text or "examples/outputs/gui_simulation")
+
+    def _part_geometry_processing_path(self) -> Path:
+        source_path = Path(self._part_geometry.text().strip())
+        if not source_path.exists():
+            raise ValueError("Select a valid part geometry STL file.")
+        return _oriented_geometry_path(
+            source_path,
+            self._geometry_processing_output_dir(),
+            self._geometry_orientation_angles(),
+        )
+
+    def _geometry_orientation_changed(self, *_args) -> None:
+        self._invalidate_voxelization()
+        support_source = getattr(self, "_support_source", None)
+        if support_source is not None and support_source.currentText() == "Generate from overhang":
+            self._last_generated_support_grid = None
+            self._last_generated_support_path = None
+            self._last_generated_support_type = None
+            self._last_generated_support_signature = None
+            self._last_support_overlay_preview = None
+            if hasattr(self, "_support_geometry"):
+                if hasattr(self._support_geometry, "blockSignals"):
+                    self._support_geometry.blockSignals(True)
+                self._support_geometry.setText("")
+                if hasattr(self._support_geometry, "blockSignals"):
+                    self._support_geometry.blockSignals(False)
+
     def _browse_support(self) -> None:
         path = self._open_file("Select support geometry", "STL files (*.stl);;All files (*.*)")
         if path:
             self._support_geometry.setText(path)
             self._append_log(f"Support geometry selected: {path}")
             self._invalidate_voxelization()
-            part_path = self._part_geometry.text().strip()
-            if part_path and Path(part_path).exists():
+            try:
+                part_path = self._part_geometry_processing_path()
+            except Exception:
+                part_path = None
+            if part_path is not None:
                 self._preview_support_overlay(part_path, path)
 
     def _browse_output_dir(self) -> None:
@@ -3203,7 +3381,17 @@ class WorkbenchMainWindow:
         if not Path(path).exists():
             self._append_log(f"STL preview skipped: file not found ({path})")
             return
-        self._preview_stl_path(path, "Preparing STL preview")
+        try:
+            preview_path = self._part_geometry_processing_path()
+        except Exception as exc:
+            self._append_log(f"STL orientation skipped: {exc}")
+            return
+        message = (
+            "Preparing oriented STL preview"
+            if Path(preview_path) != Path(path).resolve()
+            else "Preparing STL preview"
+        )
+        self._preview_stl_path(preview_path, message)
 
     def _preview_stl_path(self, path: str | Path, message: str = "Preparing STL preview") -> None:
         preview_path = Path(path)
@@ -3620,9 +3808,9 @@ class WorkbenchMainWindow:
                 "Select a valid original STL file.",
             )
             return
-        volume = self._selected_result_volume()
+        volume = self._selected_result_volume_without_support()
         label = self._result_volume_choice.currentText()
-        if self._result_support_removed():
+        if bool(self._loaded_support_mask().any()):
             label = f"{label} (support removed)"
         self._append_log(f"Rendering geometry deviation heatmap: {stl_path}")
         self._deviation_summary.setText("Preparing geometry deviation...")
@@ -3671,8 +3859,7 @@ class WorkbenchMainWindow:
             f"{metrics['mean_abs_mm']:.4g} mm, p95 {metrics['p95_abs_mm']:.4g} mm, "
             f"max |d| {metrics['max_abs_mm']:.4g} mm, signed "
             f"{metrics['min_signed_mm']:.4g} to {metrics['max_signed_mm']:.4g} mm"
-            f", color scale -{metrics['negative_scale_mm']:.4g}/"
-            f"+{metrics['positive_scale_mm']:.4g} mm"
+            ", color scale -1/+1 mm"
             f"{alignment_text}"
         )
         self._append_log(
@@ -3735,6 +3922,17 @@ class WorkbenchMainWindow:
         masked = volume.copy()
         masked[support_mask] = 0
         return masked
+
+    def _selected_result_volume_without_support(self):
+        if self._loaded_result is None:
+            raise ValueError("No result loaded.")
+        choice = self._result_volume_choice.currentText()
+        support_mask = self._loaded_support_mask()
+        if choice.startswith("Binary"):
+            return self._loaded_result["binary"] & ~support_mask
+        volume = self._loaded_result["probability"].copy()
+        volume[support_mask] = 0
+        return volume
 
     def _array_to_pixmap(self, image, *, colorize: bool = False):
         import numpy as np
@@ -4081,6 +4279,7 @@ class WorkbenchMainWindow:
     ) -> tuple[object, ...]:
         return (
             str(geometry_path.resolve()),
+            _orientation_label(self._geometry_orientation_angles()),
             float(spacing),
             options.support_type,
             float(options.overhang_angle),
@@ -4092,7 +4291,9 @@ class WorkbenchMainWindow:
 
     def _generated_support_stl_path(self, geometry_path: Path) -> Path:
         output_dir = Path(self._output_dir.text().strip() or "examples/outputs/gui_simulation")
-        return output_dir / "generated_support" / f"{geometry_path.stem}_support.stl"
+        orientation = _orientation_label(self._geometry_orientation_angles())
+        suffix = "" if orientation == "as_loaded" else f"_{orientation}"
+        return output_dir / "generated_support" / f"{geometry_path.stem}{suffix}_support.stl"
 
     def _active_generated_support_options(self):
         if self._part_type.currentText() != "Part & Support":
@@ -4124,18 +4325,16 @@ class WorkbenchMainWindow:
             return None
         if self._support_source.currentText() != "Generate from overhang":
             return None
-        support_path = getattr(self, "_last_generated_support_path", None)
-        if support_path is None:
-            support_text = self._support_geometry.text().strip()
-            support_path = Path(support_text) if support_text else None
-        if support_path is None or not Path(support_path).exists():
+        active = self._active_generated_support_path_and_options()
+        if active is None:
             return None
+        support_path, options = active
 
-        generated_type = getattr(self, "_last_generated_support_type", None)
+        generated_type = getattr(self, "_last_generated_support_type", None) or options.support_type
         if generated_type is None:
             signature = getattr(self, "_last_generated_support_signature", None)
             if isinstance(signature, tuple) and len(signature) >= 3:
-                generated_type = signature[2]
+                generated_type = signature[3]
         if generated_type is None:
             try:
                 generated_type = _load_generated_support_cache_type(support_path)
@@ -4237,6 +4436,7 @@ class WorkbenchMainWindow:
             geometry_path = Path(self._part_geometry.text().strip())
             if not geometry_path.exists():
                 raise ValueError("Select a valid part geometry STL file.")
+            processing_geometry_path = self._part_geometry_processing_path()
             spacing = self._float(self._grid_spacing, "Grid spacing")
             options = self._support_generation_from_form()
             output_path = self._generated_support_stl_path(geometry_path)
@@ -4256,7 +4456,7 @@ class WorkbenchMainWindow:
         self._set_busy(True, "Generating support...", task="support_generation")
         worker = _GeneratedSupportWorker(
             request_signature,
-            str(geometry_path),
+            str(processing_geometry_path),
             spacing,
             options,
             str(output_path),
@@ -4271,6 +4471,7 @@ class WorkbenchMainWindow:
         self._generated_support_worker = None
         try:
             geometry_path = Path(self._part_geometry.text().strip())
+            processing_geometry_path = self._part_geometry_processing_path()
             spacing = self._float(self._grid_spacing, "Grid spacing")
             options = self._support_generation_from_form()
             is_stale = request_signature != self._support_generation_signature(
@@ -4295,12 +4496,14 @@ class WorkbenchMainWindow:
         self._set_busy(False, "Support STL generated")
         if support_grid.filled_count <= 0:
             self._append_log(f"Generated support STL is empty: {path}")
-            self._preview.show_message("No support voxels were generated for the current overhang settings.")
+            self._preview.show_message(
+                "No support voxels were generated for the current overhang settings."
+            )
             return
         self._append_log(
             f"Generated support STL ready: {path}, filled voxels={support_grid.filled_count}"
         )
-        self._preview_support_overlay(geometry_path, path)
+        self._preview_support_overlay(processing_geometry_path, path)
 
     def _generated_support_failed(self, _request_signature, message: str) -> None:
         self._generated_support_worker = None
@@ -4352,6 +4555,13 @@ class WorkbenchMainWindow:
         path = self._part_geometry.text().strip()
         if not path:
             return
+        processing_path = None
+        try:
+            processing_path = self._part_geometry_processing_path()
+        except Exception:
+            processing_path = None
+        if processing_path is not None:
+            path = str(processing_path)
         self._estimate_grid_spacing_for_path(path)
 
     def _estimate_grid_spacing_for_path(self, path: str) -> None:
@@ -5585,9 +5795,10 @@ class WorkbenchMainWindow:
             StochasticMode,
         )
 
-        geometry_path = Path(self._part_geometry.text().strip())
-        if not geometry_path.exists():
+        source_geometry_path = Path(self._part_geometry.text().strip())
+        if not source_geometry_path.exists():
             raise ValueError("Select a valid part geometry STL file.")
+        geometry_path = self._part_geometry_processing_path()
         support_geometry_path = None
         support_type = "Volume support"
         support_generation = None

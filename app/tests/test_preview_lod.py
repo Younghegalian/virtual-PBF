@@ -123,21 +123,20 @@ def test_geometry_deviation_surface_reports_near_zero_for_matching_box():
     assert "Deviation color (mm)" in surface.point_data
 
 
-def test_deviation_color_limits_use_mm_ranges_independently():
+def test_deviation_color_limits_are_fixed_to_one_mm():
     metrics = {"negative_scale_mm": 2.0, "positive_scale_mm": 4.0}
 
-    assert _deviation_color_limits(metrics, 1.0) == (-2.0, 4.0)
-    assert _deviation_color_limits({"negative_scale_mm": 2.0}, 1.0) == (-2.0, 0.0)
-    assert _deviation_color_limits({"positive_scale_mm": 4.0}, 1.0) == (0.0, 4.0)
+    assert _deviation_color_limits(metrics, 1.0) == (-1.0, 1.0)
+    assert _deviation_color_limits({}, 0.1) == (-1.0, 1.0)
 
 
 def test_deviation_jet_colormap_keeps_zero_color_constant():
-    both = _deviation_jet_colormap(2.0, 4.0)
+    both = _deviation_jet_colormap(1.0, 1.0)
     positive = _deviation_jet_colormap(0.0, 4.0)
     negative = _deviation_jet_colormap(2.0, 0.0)
 
-    assert both(2.0 / 6.0) == pytest.approx(positive(0.0))
-    assert both(2.0 / 6.0) == pytest.approx(negative(1.0))
+    assert both(0.5) == pytest.approx(positive(0.0))
+    assert both(0.5) == pytest.approx(negative(1.0))
 
 
 def test_deviation_color_values_keep_mm_scale_and_zero_band():

@@ -1,3 +1,4 @@
+import json
 import zipfile
 from pathlib import Path
 
@@ -5,12 +6,20 @@ import numpy as np
 import pytest
 
 from capp.calibration.rmc import RmcParameterSet
+from capp.domain import (
+    MachineBiasMode,
+    MachineMapCoordinateMode,
+    NeighborhoodModel,
+    SolverParameters,
+    VoxelGrid,
+)
 from capp.machine_map import (
-    build_machine_parameter_map_from_files,
     CoordinateNormalizer,
     MachineParameterMap,
     MachineParameterRow,
     SampleCoordinate,
+    apply_machine_parameter_map,
+    build_machine_parameter_map_from_files,
     generate_machine_parameter_map_from_files,
     read_model_calibration_weights_csv,
     read_sample_coordinates_xlsx,
@@ -233,6 +242,102 @@ def test_save_machine_parameter_map_outputs_can_use_exact_preset_folder(tmp_path
     assert saved.output_dir == preset_folder
     assert saved.map_npz == preset_folder / "machine_parameter_map.npz"
     assert not (library_root / "machine_presets").exists()
+
+
+def test_apply_machine_parameter_map_samples_grid_to_solver_parameters(tmp_path: Path):
+    map_path = tmp_path / "machine_parameter_map.npz"
+    base = np.asarray([[0.0, 1.0], [10.0, 11.0]], dtype=np.float32)
+    np.savez_compressed(
+        map_path,
+        parameter_names=np.asarray(["NX", "PX", "NY", "PY", "EPS", "IDP"]),
+        NX=base,
+        PX=base + 100.0,
+        NY=base + 200.0,
+        PY=base + 300.0,
+        EPS=base + 400.0,
+        IDP=base + 500.0,
+    )
+    map_path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "normalizer": {
+                    "x_offset": 0.0,
+                    "y_offset": 0.0,
+                    "x_range": 1.0,
+                    "y_range": 1.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    grid = VoxelGrid(
+        np.ones((2, 2, 1), dtype=bool),
+        spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+    )
+    parameters = SolverParameters(
+        neighborhood=NeighborhoodModel.DIRECTIONAL_VON_NEUMANN,
+        machine_bias=MachineBiasMode.PRESET,
+        machine_map_path=map_path,
+        machine_map_coordinate_mode=MachineMapCoordinateMode.EXPLICIT_BOUNDS,
+        machine_map_bounds=(0.0, 1.0, 0.0, 1.0),
+    )
+
+    mapped = apply_machine_parameter_map(parameters, grid)
+
+    expected = np.asarray([[0.0, 10.0], [1.0, 11.0]], dtype=np.float32)
+    assert mapped.machine_bias is MachineBiasMode.NONE
+    assert mapped.spatial_current_coefficients is not None
+    assert np.allclose(mapped.spatial_current_coefficients[0], expected)
+    assert np.allclose(mapped.spatial_current_coefficients[1], expected + 100.0)
+    assert np.allclose(mapped.spatial_min_bias, expected + 400.0)
+    assert np.allclose(mapped.spatial_initial_deviation, expected + 500.0)
+
+
+def test_apply_machine_parameter_map_centers_on_part_not_support(tmp_path: Path):
+    map_path = tmp_path / "machine_parameter_map.npz"
+    x_values = np.asarray([[0.0, 1.0], [0.0, 1.0]], dtype=np.float32)
+    np.savez_compressed(
+        map_path,
+        parameter_names=np.asarray(["NX", "PX", "NY", "PY", "EPS", "IDP"]),
+        NX=x_values,
+        PX=x_values,
+        NY=x_values,
+        PY=x_values,
+        EPS=x_values,
+        IDP=x_values,
+    )
+    map_path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "normalizer": {
+                    "x_offset": 1.0,
+                    "y_offset": 1.0,
+                    "x_range": 2.0,
+                    "y_range": 2.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    data = np.zeros((5, 1, 1), dtype=bool)
+    data[[0, 3, 4], 0, 0] = True
+    support_mask = np.zeros_like(data)
+    support_mask[0, 0, 0] = True
+    grid = VoxelGrid(data, spacing=1.0, origin=(0.0, 0.0, 0.0), support_mask=support_mask)
+    parameters = SolverParameters(
+        neighborhood=NeighborhoodModel.DIRECTIONAL_VON_NEUMANN,
+        machine_bias=MachineBiasMode.PRESET,
+        machine_map_path=map_path,
+        machine_map_coordinate_mode=MachineMapCoordinateMode.PART_CENTER,
+        machine_map_position=(0.0, 0.0),
+    )
+
+    mapped = apply_machine_parameter_map(parameters, grid)
+
+    assert mapped.spatial_current_coefficients is not None
+    assert np.isclose(mapped.spatial_current_coefficients[0][3, 0], 0.25)
+    assert np.isclose(mapped.spatial_current_coefficients[0][4, 0], 0.75)
 
 
 def _write_minimal_weights_csv(path: Path) -> None:
