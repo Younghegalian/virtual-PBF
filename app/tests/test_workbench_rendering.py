@@ -24,12 +24,56 @@ class _ButtonProbe:
         self.enabled = bool(enabled)
 
 
+class _WidgetProbe(_ButtonProbe):
+    def __init__(self):
+        super().__init__()
+        self.visible = None
+
+    def setVisible(self, visible):
+        self.visible = bool(visible)
+
+
 class _LineEditProbe:
     def __init__(self):
         self.text = ""
 
     def setText(self, text):
         self.text = str(text)
+
+
+class _ComboProbe:
+    def __init__(self, text):
+        self.text = text
+        self.visible = None
+
+    def currentText(self):
+        return self.text
+
+    def setVisible(self, visible):
+        self.visible = bool(visible)
+
+
+class _ToggleProbe(_WidgetProbe):
+    def __init__(self, checked=False):
+        super().__init__()
+        self.checked = bool(checked)
+        self.text = ""
+        self.arrow = None
+
+    def isChecked(self):
+        return self.checked
+
+    def setText(self, text):
+        self.text = text
+
+    def setArrowType(self, arrow):
+        self.arrow = arrow
+
+
+class _QtProbe:
+    class ArrowType:
+        DownArrow = "down"
+        RightArrow = "right"
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -127,6 +171,60 @@ def test_loaded_result_change_advances_deviation_revision():
 
     assert view._result_revision == 5
     assert view._deviation_summary.text == "Ready"
+
+
+def test_support_options_expand_only_for_part_and_support():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._Qt = _QtProbe()
+    view._part_type = _ComboProbe("Part only")
+    view._support_options_toggle = _ToggleProbe(checked=True)
+    view._support_options_panel = _WidgetProbe()
+    view._support_geometry = _WidgetProbe()
+    view._support_type = _WidgetProbe()
+
+    view._update_support_controls()
+
+    assert view._support_options_toggle.enabled is False
+    assert view._support_geometry.enabled is False
+    assert view._support_type.enabled is False
+    assert view._support_options_panel.visible is False
+    assert view._support_options_toggle.text == "Show support options"
+    assert view._support_options_toggle.arrow == "right"
+
+    view._part_type.text = "Part & Support"
+    view._support_options_toggle.checked = False
+    view._update_support_controls()
+
+    assert view._support_options_toggle.enabled is True
+    assert view._support_geometry.enabled is True
+    assert view._support_type.enabled is True
+    assert view._support_options_panel.visible is False
+
+    view._toggle_support_options(True)
+
+    assert view._support_options_panel.visible is True
+    assert view._support_options_toggle.text == "Hide support options"
+    assert view._support_options_toggle.arrow == "down"
+
+
+def test_overhang_limit_control_is_hidden_until_overhang_mode():
+    pane = PreviewPane.__new__(PreviewPane)
+    pane._stl_controls_visible = True
+    pane.stl_display_mode = _ComboProbe("Shaded")
+    pane.overhang_limit = _WidgetProbe()
+
+    pane._sync_stl_control_visibility()
+
+    assert pane.overhang_limit.visible is False
+
+    pane.stl_display_mode.text = "Overhang angle"
+    pane._sync_stl_control_visibility()
+
+    assert pane.overhang_limit.visible is True
+
+    pane.set_stl_controls_visible(False)
+
+    assert pane.overhang_limit.visible is False
 
 
 def test_stale_geometry_deviation_finish_is_discarded():

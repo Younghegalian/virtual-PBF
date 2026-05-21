@@ -314,14 +314,16 @@ class PreviewPane:
         self.source_selector.setObjectName("PreviewSource")
         self.source_selector.addItems(["STL", "Voxelization", "Result"])
         self.source_selector.setVisible(show_source_selector)
+        self._stl_controls_visible = show_stl_controls
         self.stl_display_mode = QComboBox()
         self.stl_display_mode.setObjectName("PreviewStlMode")
         self.stl_display_mode.addItems(["Shaded", "Overhang angle"])
         self.stl_display_mode.setVisible(show_stl_controls)
+        self.stl_display_mode.currentTextChanged.connect(self._sync_stl_control_visibility)
         self.overhang_limit = QLineEdit("60")
         self.overhang_limit.setObjectName("PreviewOverhangLimit")
         self.overhang_limit.setFixedWidth(44)
-        self.overhang_limit.setVisible(show_stl_controls)
+        self.overhang_limit.setVisible(False)
         self._render_mode = QComboBox()
         self._render_mode.setObjectName("PreviewMode")
         self._render_mode.addItems(
@@ -356,6 +358,7 @@ class PreviewPane:
         self._plotter = None
         self._pyvista = None
         self._last_volume_request = None
+        self._sync_stl_control_visibility()
 
     def show_stl(
         self,
@@ -428,8 +431,16 @@ class PreviewPane:
             self.show_message(f"STL preview failed: {exc}")
 
     def set_stl_controls_visible(self, visible: bool) -> None:
+        self._stl_controls_visible = bool(visible)
         self.stl_display_mode.setVisible(visible)
-        self.overhang_limit.setVisible(visible)
+        self._sync_stl_control_visibility()
+
+    def _sync_stl_control_visibility(self, *_args) -> None:
+        show_overhang_limit = (
+            self._stl_controls_visible
+            and self.stl_display_mode.currentText() == "Overhang angle"
+        )
+        self.overhang_limit.setVisible(show_overhang_limit)
 
     def set_volume_controls_visible(self, visible: bool) -> None:
         self._render_mode.setVisible(visible)

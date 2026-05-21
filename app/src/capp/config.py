@@ -22,6 +22,8 @@ class SimulationConfig:
     output_dir: Path
     voxel_spacing: float
     solver: SolverParameters
+    support_geometry_path: Path | None = None
+    support_type: str = "Volume support"
 
 
 def load_simulation_config(path: str | Path) -> SimulationConfig:

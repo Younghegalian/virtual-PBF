@@ -278,14 +278,16 @@ class _VoxelizationWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            from capp.geometry.voxelizer import voxelize_mesh
+            from capp.geometry.voxelizer import voxelize_part_and_support
 
             def progress(percent: int, message: str) -> None:
                 self.signals.progress.emit(percent, message)
 
-            grid = voxelize_mesh(
+            grid = voxelize_part_and_support(
                 self.config.geometry_path,
+                getattr(self.config, "support_geometry_path", None),
                 self.config.voxel_spacing,
+                getattr(self.config, "support_type", "Volume support"),
                 progress_callback=progress,
             )
         except Exception as exc:
@@ -906,6 +908,24 @@ class WorkbenchMainWindow:
                 background: #edf0f3;
                 border-color: #d1d6de;
             }
+            QToolButton#SupportOptionsToggle {
+                min-height: 19px;
+                min-width: 0;
+                background: #f6f8fb;
+                border: 1px solid #aeb7c2;
+                border-radius: 1px;
+                padding: 0 7px;
+                text-align: left;
+            }
+            QToolButton#SupportOptionsToggle:hover {
+                background: #e9f1fb;
+                border-color: #6b93c4;
+            }
+            QToolButton#SupportOptionsToggle:disabled {
+                color: #9aa3ad;
+                background: #edf0f3;
+                border-color: #d1d6de;
+            }
             QPlainTextEdit#DetailsText {
                 background: #ffffff;
                 background-color: #ffffff;
@@ -1087,7 +1107,15 @@ class WorkbenchMainWindow:
                 background: #d8e0ea;
                 border-color: #728197;
             }
+            QToolButton#SupportOptionsToggle {
+                background: #d8e0ea;
+                border-color: #728197;
+            }
             QPushButton:hover {
+                background: #c8d7e8;
+                border-color: #4c6b91;
+            }
+            QToolButton#SupportOptionsToggle:hover {
                 background: #c8d7e8;
                 border-color: #4c6b91;
             }
@@ -1158,7 +1186,15 @@ class WorkbenchMainWindow:
                 background: #ffffff;
                 border-color: #b8c7d8;
             }
+            QToolButton#SupportOptionsToggle {
+                background: #ffffff;
+                border-color: #b8c7d8;
+            }
             QPushButton:hover {
+                background: #f0f8ff;
+                border-color: #6ba7d8;
+            }
+            QToolButton#SupportOptionsToggle:hover {
                 background: #f0f8ff;
                 border-color: #6ba7d8;
             }
@@ -1242,6 +1278,7 @@ class WorkbenchMainWindow:
             QPushButton,
             QScrollArea,
             QSplitter,
+            QToolButton,
             QVBoxLayout,
             QWidget,
         )
@@ -1284,8 +1321,24 @@ class WorkbenchMainWindow:
             self._file_row(self._part_geometry, self._browse_part),
         )
 
+        self._support_options_toggle = QToolButton()
+        self._support_options_toggle.setObjectName("SupportOptionsToggle")
+        self._support_options_toggle.setCheckable(True)
+        self._support_options_toggle.setChecked(False)
+        self._support_options_toggle.setToolButtonStyle(
+            self._Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._support_options_toggle.clicked.connect(self._toggle_support_options)
+        geometry_form.addRow("Support setup", self._support_options_toggle)
+
+        self._support_options_panel = QWidget()
+        self._support_options_panel.setObjectName("SupportOptionsPanel")
+        support_form = QFormLayout(self._support_options_panel)
+        self._configure_form(support_form)
+
         self._support_geometry = QLineEdit()
-        geometry_form.addRow(
+        self._support_geometry.textChanged.connect(self._invalidate_voxelization)
+        support_form.addRow(
             "Support geometry",
             self._file_row(self._support_geometry, self._browse_support),
         )
@@ -1293,7 +1346,9 @@ class WorkbenchMainWindow:
         self._support_type = QComboBox()
         self._support_type.addItems(["Line support", "Volume support"])
         self._support_type.setCurrentText("Volume support")
-        geometry_form.addRow("Support type", self._support_type)
+        self._support_type.currentTextChanged.connect(self._invalidate_voxelization)
+        support_form.addRow("Support type", self._support_type)
+        geometry_form.addRow("", self._support_options_panel)
 
         self._grid_spacing = QLineEdit("0.5")
         self._grid_spacing.textChanged.connect(self._invalidate_voxelization)
@@ -2476,6 +2531,7 @@ class WorkbenchMainWindow:
         if path:
             self._support_geometry.setText(path)
             self._append_log(f"Support geometry selected: {path}")
+            self._invalidate_voxelization()
 
     def _browse_output_dir(self) -> None:
         path = self._QFileDialog.getExistingDirectory(
@@ -3479,9 +3535,35 @@ class WorkbenchMainWindow:
         return path
 
     def _on_part_type_changed(self, value: str) -> None:
-        enabled = value == "Part & Support"
-        self._support_geometry.setEnabled(enabled)
-        self._support_type.setEnabled(enabled)
+        self._update_support_controls(value)
+        self._invalidate_voxelization()
+
+    def _toggle_support_options(self, checked: bool) -> None:
+        self._update_support_controls(self._part_type.currentText(), expanded=checked)
+
+    def _update_support_controls(
+        self, value: str | None = None, expanded: bool | None = None
+    ) -> None:
+        part_type = value if value is not None else self._part_type.currentText()
+        support_enabled = part_type == "Part & Support"
+        if expanded is None:
+            expanded = bool(self._support_options_toggle.isChecked())
+        panel_visible = support_enabled and bool(expanded)
+
+        self._support_options_toggle.setEnabled(support_enabled)
+        self._support_geometry.setEnabled(support_enabled)
+        self._support_type.setEnabled(support_enabled)
+        self._support_options_panel.setVisible(panel_visible)
+
+        text = "Hide support options" if panel_visible else "Show support options"
+        self._support_options_toggle.setText(text)
+        if hasattr(self._support_options_toggle, "setArrowType"):
+            arrow = (
+                self._Qt.ArrowType.DownArrow
+                if panel_visible
+                else self._Qt.ArrowType.RightArrow
+            )
+            self._support_options_toggle.setArrowType(arrow)
 
     def _set_parameter_defaults(self, value: str) -> None:
         is_simple = value == "SimpleVN"
@@ -4430,14 +4512,6 @@ class WorkbenchMainWindow:
             self._QMessageBox.warning(self._window, "Invalid input", str(exc))
             return
 
-        if self._part_type.currentText() == "Part & Support":
-            self._QMessageBox.warning(
-                self._window,
-                "Not implemented",
-                "Part & Support UI is restored, but support voxelization is not migrated yet.",
-            )
-            return
-
         if self._last_voxel_grid is None:
             self._QMessageBox.warning(
                 self._window,
@@ -4656,8 +4730,14 @@ class WorkbenchMainWindow:
         self._update_preview_source_availability()
         self._append_log("Voxelization cleared. Run voxelization again before simulation.")
 
-    def _voxel_signature(self, config) -> tuple[str, float]:
-        return (str(config.geometry_path.resolve()), float(config.voxel_spacing))
+    def _voxel_signature(self, config) -> tuple[str, str, str, float]:
+        support_path = getattr(config, "support_geometry_path", None)
+        return (
+            str(config.geometry_path.resolve()),
+            "" if support_path is None else str(Path(support_path).resolve()),
+            str(getattr(config, "support_type", "")),
+            float(config.voxel_spacing),
+        )
 
     def _simulation_config_from_form(self):
         from capp.config import SimulationConfig
@@ -4672,6 +4752,13 @@ class WorkbenchMainWindow:
         geometry_path = Path(self._part_geometry.text().strip())
         if not geometry_path.exists():
             raise ValueError("Select a valid part geometry STL file.")
+        support_geometry_path = None
+        support_type = "Volume support"
+        if self._part_type.currentText() == "Part & Support":
+            support_geometry_path = Path(self._support_geometry.text().strip())
+            if not support_geometry_path.exists():
+                raise ValueError("Select a valid support geometry STL file.")
+            support_type = self._support_type.currentText()
 
         neighborhood_text = self._neighborhood.currentText()
         if neighborhood_text == "SimpleVN":
@@ -4760,11 +4847,17 @@ class WorkbenchMainWindow:
             output_dir=Path(self._output_dir.text().strip()),
             voxel_spacing=self._float(self._grid_spacing, "Grid spacing"),
             solver=solver,
+            support_geometry_path=support_geometry_path,
+            support_type=support_type,
         )
 
     def _log_run_config(self, config) -> None:
         solver = config.solver
         self._append_log(f"Geometry path used: {config.geometry_path}")
+        if getattr(config, "support_geometry_path", None) is not None:
+            self._append_log(
+                f"Support path used: {config.support_geometry_path} ({config.support_type})"
+            )
         self._append_log(f"Output directory: {config.output_dir}")
         self._append_log(f"Voxel spacing: {config.voxel_spacing:g} mm")
         self._append_log(f"Neighborhood: {solver.neighborhood.value}")
