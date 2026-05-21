@@ -16,12 +16,28 @@ def run_simulation_config(
     config: SimulationConfig,
     progress_callback: ProgressCallback | None = None,
 ) -> SimulationResult:
-    pipeline = SimulationPipeline(solver=None)
-    return pipeline.run_from_stl(
-        geometry_path=config.geometry_path,
-        voxel_spacing=config.voxel_spacing,
-        parameters=config.solver,
-        progress_callback=progress_callback,
+    from capp.geometry.voxelizer import voxelize_part_and_support
+
+    grid = voxelize_part_and_support(
+        config.geometry_path,
+        config.support_geometry_path,
+        config.voxel_spacing,
+        config.support_type,
+        support_generation=config.support_generation,
+        progress_callback=(
+            _scale_progress(progress_callback, 0, 35, "Voxelizing geometry")
+            if progress_callback is not None
+            else None
+        ),
+    )
+    return run_simulation_grid(
+        grid,
+        config,
+        progress_callback=(
+            _scale_progress(progress_callback, 35, 100, "Solving virtual printing")
+            if progress_callback is not None
+            else None
+        ),
     )
 
 
@@ -45,6 +61,7 @@ def run_simulation_grid(
         probability_density=result.probability_density,
         elapsed_seconds=result.elapsed_seconds,
         source_geometry=config.geometry_path,
+        support_mask=result.support_mask,
     )
 
 
@@ -79,4 +96,29 @@ def save_default_outputs(
         scalar_name="Binary",
     )
     if progress_callback is not None:
+        progress_callback(88, "Saving support_mask.vtk")
+    write_vtk_volume(
+        output_path / "support_mask.vtk",
+        result.support_mask.astype("uint8"),
+        spacing=result.spacing,
+        origin=result.origin,
+        scalar_name="SupportMask",
+    )
+    if progress_callback is not None:
         progress_callback(100, "Output save complete")
+
+
+def _scale_progress(
+    callback: ProgressCallback | None,
+    start: int,
+    end: int,
+    fallback_message: str,
+) -> ProgressCallback | None:
+    if callback is None:
+        return None
+
+    def scaled(percent: int, message: str) -> None:
+        value = start + int((end - start) * max(0, min(100, percent)) / 100)
+        callback(value, message or fallback_message)
+
+    return scaled

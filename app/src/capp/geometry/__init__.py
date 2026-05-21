@@ -1,5 +1,6 @@
 from capp.geometry.mesh import MeshGeometry, load_mesh
 from capp.geometry.voxelizer import (
+    generate_overhang_support_grid,
     union_voxel_grids,
     voxelize_mesh,
     voxelize_part_and_support,
@@ -9,6 +10,7 @@ from capp.geometry.voxelizer import (
 
 __all__ = [
     "MeshGeometry",
+    "generate_overhang_support_grid",
     "load_mesh",
     "union_voxel_grids",
     "voxelize_mesh",

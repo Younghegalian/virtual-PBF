@@ -169,6 +169,7 @@ class CudaLayerwiseMarkovSolver:
             rest_volume=rest_volume,
             probability_density=probability_density,
             elapsed_seconds=perf_counter() - started,
+            support_mask=grid.support_mask,
         )
 
 

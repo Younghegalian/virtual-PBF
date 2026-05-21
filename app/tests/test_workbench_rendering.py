@@ -41,6 +41,18 @@ class _LineEditProbe:
         self.text = str(text)
 
 
+class _TextFieldProbe:
+    def __init__(self, text):
+        self._text = str(text)
+        self.enabled = None
+
+    def text(self):
+        return self._text
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+
 class _ComboProbe:
     def __init__(self, text):
         self.text = text
@@ -70,10 +82,29 @@ class _ToggleProbe(_WidgetProbe):
         self.arrow = arrow
 
 
+class _CheckProbe(_WidgetProbe):
+    def __init__(self, checked=False):
+        super().__init__()
+        self.checked = bool(checked)
+
+    def isChecked(self):
+        return self.checked
+
+
 class _QtProbe:
     class ArrowType:
         DownArrow = "down"
         RightArrow = "right"
+
+
+class _PreviewProbe:
+    def __init__(self, mode="Shaded", overhang_limit="60"):
+        self.stl_display_mode = _ComboProbe(mode)
+        self.overhang_limit = _TextFieldProbe(overhang_limit)
+        self.overlay_kwargs = None
+
+    def show_stl_overlay_mesh(self, *args, **kwargs):
+        self.overlay_kwargs = kwargs
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -173,6 +204,89 @@ def test_loaded_result_change_advances_deviation_revision():
     assert view._deviation_summary.text == "Ready"
 
 
+def test_selected_result_volume_can_hide_support_mask():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    binary = np.ones((2, 2, 2), dtype=bool)
+    probability = np.full((2, 2, 2), 100, dtype=np.uint8)
+    support_mask = np.zeros((2, 2, 2), dtype=bool)
+    support_mask[0, 0, 0] = True
+    view._loaded_result = {
+        "binary": binary,
+        "probability": probability,
+        "voxel": binary,
+        "support_mask": support_mask,
+    }
+    view._result_hide_support = _CheckProbe(checked=True)
+    view._result_volume_choice = _ComboProbe("Binary")
+
+    selected = view._selected_result_volume()
+
+    assert not bool(selected[0, 0, 0])
+    assert bool(selected[1, 1, 1])
+
+    view._result_volume_choice.text = "Probability"
+    selected_probability = view._selected_result_volume()
+
+    assert selected_probability[0, 0, 0] == 0
+    assert selected_probability[1, 1, 1] == 100
+
+
+def test_current_result_for_save_can_remove_support_mask():
+    support_mask = np.zeros((2, 2, 2), dtype=bool)
+    support_mask[0, 0, 0] = True
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._last_result = None
+    view._loaded_result = {
+        "probability": np.full((2, 2, 2), 100, dtype=np.uint8),
+        "binary": np.ones((2, 2, 2), dtype=bool),
+        "voxel": np.ones((2, 2, 2), dtype=bool),
+        "support_mask": support_mask,
+        "spacing": 1.0,
+        "origin": (0.0, 0.0, 0.0),
+        "rest_volume": 100.0,
+        "probability_density": 100.0,
+        "elapsed_seconds": 1.0,
+        "source_geometry": None,
+    }
+    view._result_hide_support = _CheckProbe(checked=True)
+
+    result = view._current_result_for_save()
+
+    assert not result.voxel[0, 0, 0]
+    assert not result.binary[0, 0, 0]
+    assert result.probability[0, 0, 0] == 0
+    assert result.support_mask.sum() == 0
+
+
+def test_support_overlay_uses_current_stl_display_settings():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._preview = _PreviewProbe(mode="Overhang angle", overhang_limit="45")
+    view._last_support_overlay_preview = (
+        "part.stl",
+        object(),
+        10,
+        "support.stl",
+        object(),
+        5,
+    )
+    view._last_stl_preview = None
+
+    view._show_stl_preview_from_cache()
+
+    assert view._preview.overlay_kwargs == {
+        "display_mode": "Overhang angle",
+        "overhang_limit": 45.0,
+    }
+
+
+def test_backend_status_line_is_compact():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    status = type("StatusProbe", (), {"label": "PBF X", "available": False})()
+
+    assert view._backend_status_line(status) == "PBF X: unavailable"
+    assert "\n" not in view._backend_status_line(status)
+
+
 def test_support_options_expand_only_for_part_and_support():
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
     view._Qt = _QtProbe()
@@ -205,6 +319,37 @@ def test_support_options_expand_only_for_part_and_support():
     assert view._support_options_panel.visible is True
     assert view._support_options_toggle.text == "Hide support options"
     assert view._support_options_toggle.arrow == "down"
+
+
+def test_generated_support_is_inactive_until_button_result_matches(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("1.0")
+    view._support_type = _ComboProbe("X surface support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_signature = None
+
+    assert view._active_generated_support_options() is None
+
+    options = view._support_generation_from_form()
+    view._last_generated_support_signature = view._support_generation_signature(
+        part,
+        1.0,
+        options,
+    )
+
+    assert view._active_generated_support_options() == options
 
 
 def test_overhang_limit_control_is_hidden_until_overhang_mode():

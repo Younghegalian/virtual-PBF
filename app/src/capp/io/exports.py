@@ -24,6 +24,7 @@ def save_npz(path: str | Path, result: SimulationResult) -> None:
         rest_volume=np.array([result.rest_volume], dtype=np.float64),
         probability_density=np.array([result.probability_density], dtype=np.float64),
         source_geometry=np.array([source_geometry]),
+        support_mask=result.support_mask.astype(bool, copy=False),
     )
 
 
@@ -80,6 +81,9 @@ def write_binary_stl(
     volume: NDArray,
     spacing: float,
     origin: tuple[float, float, float],
+    *,
+    clip_min_z: float | None = None,
+    voxel_bounds: bool = False,
 ) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,63 +100,89 @@ def write_binary_stl(
         spacing=(float(spacing), float(spacing), float(spacing)),
     )
     vertices = vertices - float(spacing) + np.asarray(origin, dtype=np.float32)
+    if voxel_bounds:
+        vertices += float(spacing) * 0.5
+    if clip_min_z is not None:
+        vertices[:, 2] = np.maximum(vertices[:, 2], float(clip_min_z))
     _write_binary_stl(output_path, vertices, faces)
 
 
-def _write_empty_stl(path: Path) -> None:
-    with path.open("wb") as handle:
-        handle.write(b"virtual PBF empty STL".ljust(80, b"\0"))
-        handle.write(struct.pack("<I", 0))
-
-
-def _write_binary_stl(path: Path, vertices: NDArray, faces: NDArray) -> None:
-    triangles = np.asarray(vertices, dtype=np.float32)[np.asarray(faces, dtype=np.int64)]
-    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    norms = np.linalg.norm(normals, axis=1)
-    valid = norms > 0.0
-    normals[valid] /= norms[valid, None]
-    normals[~valid] = 0.0
-
-    records = np.empty(
-        len(triangles),
-        dtype=[
-            ("normal", "<f4", (3,)),
-            ("vertices", "<f4", (3, 3)),
-            ("attribute_byte_count", "<u2"),
-        ],
-    )
-    records["normal"] = normals.astype(np.float32, copy=False)
-    records["vertices"] = triangles.astype(np.float32, copy=False)
-    records["attribute_byte_count"] = 0
-
-    with path.open("wb") as handle:
-        handle.write(b"virtual PBF binary STL".ljust(80, b"\0"))
-        handle.write(struct.pack("<I", len(triangles)))
-        handle.write(records.tobytes())
-
-
-def write_binary_stl(
+def write_surface_stl(
     path: str | Path,
     volume: NDArray,
     spacing: float,
     origin: tuple[float, float, float],
+    *,
+    bottom_z: float | None = None,
 ) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     array = np.asarray(volume, dtype=bool)
     if array.ndim != 3:
-        raise ValueError("STL volume export requires a 3D array.")
-    padded = np.pad(array.astype(np.float32), 1, mode="constant", constant_values=0.0)
-    if float(padded.max()) <= 0.0:
+        raise ValueError("STL surface export requires a 3D array.")
+    if not np.any(array):
         _write_empty_stl(output_path)
         return
-    vertices, faces, _normals, _values = measure.marching_cubes(
-        padded,
-        level=0.5,
-        spacing=(float(spacing), float(spacing), float(spacing)),
+
+    spacing_value = float(spacing)
+    origin_array = np.asarray(origin, dtype=np.float32)
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+    occupied_xy = np.argwhere(array.any(axis=2))
+    for x_index, y_index in occupied_xy:
+        z_indices = np.where(array[x_index, y_index, :])[0]
+        if z_indices.size == 0:
+            continue
+        z_bottom = origin_array[2] + float(z_indices.min()) * spacing_value
+        if bottom_z is not None:
+            z_bottom = max(z_bottom, float(bottom_z))
+        z_top = origin_array[2] + float(z_indices.max() + 1) * spacing_value
+        if z_bottom >= z_top:
+            continue
+        center_x = origin_array[0] + (float(x_index) + 0.5) * spacing_value
+        center_y = origin_array[1] + (float(y_index) + 0.5) * spacing_value
+        direction = _surface_support_direction(array, int(x_index), int(y_index))
+        half_x = 0.5 * spacing_value * direction[0]
+        half_y = 0.5 * spacing_value * direction[1]
+        start = len(vertices)
+        vertices.extend(
+            [
+                (center_x - half_x, center_y - half_y, z_bottom),
+                (center_x + half_x, center_y + half_y, z_bottom),
+                (center_x + half_x, center_y + half_y, z_top),
+                (center_x - half_x, center_y - half_y, z_top),
+            ]
+        )
+        faces.extend([(start, start + 1, start + 2), (start, start + 2, start + 3)])
+
+    if not faces:
+        _write_empty_stl(output_path)
+        return
+    _write_binary_stl(
+        output_path,
+        np.asarray(vertices, dtype=np.float32),
+        np.asarray(faces, dtype=np.int64),
     )
-    vertices = vertices - float(spacing) + np.asarray(origin, dtype=np.float32)
-    _write_binary_stl(output_path, vertices, faces)
+
+
+def _surface_support_direction(array: NDArray[np.bool_], x_index: int, y_index: int) -> tuple[float, float]:
+    x_size, y_size = array.shape[:2]
+
+    def occupied(x_offset: int, y_offset: int) -> bool:
+        x = x_index + x_offset
+        y = y_index + y_offset
+        if x < 0 or y < 0 or x >= x_size or y >= y_size:
+            return False
+        return bool(array[x, y, :].any())
+
+    positive = occupied(-1, -1) or occupied(1, 1)
+    negative = occupied(-1, 1) or occupied(1, -1)
+    inv_sqrt2 = 2.0**-0.5
+    if positive and not negative:
+        return (inv_sqrt2, inv_sqrt2)
+    if negative and not positive:
+        return (inv_sqrt2, -inv_sqrt2)
+    return (1.0, 0.0)
 
 
 def _write_empty_stl(path: Path) -> None:

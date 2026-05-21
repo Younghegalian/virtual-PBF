@@ -56,6 +56,7 @@ class SimulationPipeline:
             probability_density=result.probability_density,
             elapsed_seconds=result.elapsed_seconds,
             source_geometry=Path(geometry_path),
+            support_mask=result.support_mask,
         )
 
     def run_voxel_grid(

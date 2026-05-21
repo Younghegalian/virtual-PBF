@@ -13,6 +13,7 @@ from capp.domain import (
     SolverBackend,
     SolverParameters,
     StochasticMode,
+    SupportGenerationParameters,
 )
 
 
@@ -24,6 +25,7 @@ class SimulationConfig:
     solver: SolverParameters
     support_geometry_path: Path | None = None
     support_type: str = "Volume support"
+    support_generation: SupportGenerationParameters | None = None
 
 
 def load_simulation_config(path: str | Path) -> SimulationConfig:
@@ -85,11 +87,20 @@ def load_simulation_config(path: str | Path) -> SimulationConfig:
         rng_seed=solver_raw.get("rng_seed", 1000),
     )
 
+    support_geometry_path = raw.get("support_geometry_path")
+
     return SimulationConfig(
         geometry_path=geometry_path,
         output_dir=output_dir,
         voxel_spacing=float(raw["voxel_spacing"]),
         solver=solver,
+        support_geometry_path=(
+            _resolve_path(base_dir, support_geometry_path)
+            if support_geometry_path is not None
+            else None
+        ),
+        support_type=str(raw.get("support_type", "Volume support")),
+        support_generation=_support_generation_from_raw(raw.get("support_generation")),
     )
 
 
@@ -104,3 +115,24 @@ def _tuple_or_scalar(value: Any) -> float | tuple[float, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(float(v) for v in value)
     return float(value)
+
+
+def _support_generation_from_raw(value: Any) -> SupportGenerationParameters | None:
+    if value is None or value is False:
+        return None
+    if value is True:
+        return SupportGenerationParameters()
+    if not isinstance(value, dict):
+        raise TypeError("support_generation must be a mapping when provided.")
+    return SupportGenerationParameters(
+        support_type=str(value.get("support_type", "X surface support")),
+        overhang_angle=float(value.get("overhang_angle", 60.0)),
+        pitch=float(value.get("pitch", 2.0)),
+        thickness=float(value.get("thickness", 0.5)),
+        footprint_offset=float(value.get("footprint_offset", 0.5)),
+        build_plate_z=(
+            None
+            if value.get("build_plate_z") is None
+            else float(value.get("build_plate_z", 0.0))
+        ),
+    )

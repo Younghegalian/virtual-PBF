@@ -401,20 +401,7 @@ class PreviewPane:
             if display_mode == "Overhang angle":
                 self._add_overhang_mesh(plotter, mesh, overhang_limit)
             else:
-                show_edges = mesh.n_cells <= 120_000
-                plotter.add_mesh(
-                    mesh,
-                    color="#cbd5e1",
-                    edge_color="#475569",
-                    show_edges=show_edges,
-                    smooth_shading=False,
-                    lighting=True,
-                    ambient=0.32,
-                    diffuse=0.82,
-                    specular=0.22,
-                    specular_power=20,
-                    silhouette={"color": "#1f2937", "line_width": 2.0},
-                )
+                self._add_shaded_cad_mesh(plotter, mesh)
             if mesh.n_cells <= 180_000:
                 self._add_feature_edges(plotter, mesh)
             plotter.add_mesh(mesh.outline(), color="#334155", line_width=1.4)
@@ -429,6 +416,84 @@ class PreviewPane:
             self._title.setText(f"STL Preview: {Path(path).name}{suffix}")
         except Exception as exc:
             self.show_message(f"STL preview failed: {exc}")
+
+    def show_stl_overlay_mesh(
+        self,
+        part_path: str | Path,
+        part_mesh,
+        part_cells: int,
+        support_path: str | Path,
+        support_mesh,
+        support_cells: int,
+        *,
+        display_mode: str = "Shaded",
+        overhang_limit: float = 60.0,
+    ) -> None:
+        try:
+            self._last_volume_request = None
+            self._render_mode.setVisible(False)
+            plotter = self._ensure_plotter()
+            plotter.clear()
+            self._prepare_scene(plotter)
+            with suppress(Exception):
+                plotter.enable_eye_dome_lighting()
+
+            if display_mode == "Overhang angle":
+                self._add_overhang_mesh(plotter, part_mesh, overhang_limit)
+            else:
+                self._add_shaded_cad_mesh(plotter, part_mesh)
+            if part_mesh.n_cells <= 180_000:
+                self._add_feature_edges(plotter, part_mesh)
+            plotter.add_mesh(
+                support_mesh,
+                color="#e85d04",
+                edge_color="#7c2d12",
+                show_edges=support_mesh.n_cells <= 180_000,
+                smooth_shading=False,
+                lighting=True,
+                ambient=0.42,
+                diffuse=0.76,
+                specular=0.18,
+                silhouette={"color": "#7c2d12", "line_width": 1.7},
+            )
+            plotter.add_mesh(part_mesh.outline(), color="#64748b", line_width=1.1)
+            plotter.add_mesh(support_mesh.outline(), color="#9a3412", line_width=1.3)
+            plotter.add_axes()
+            self._set_cad_camera(plotter, _combined_mesh_bounds(part_mesh, support_mesh))
+            self._render_plotter(plotter)
+            part_suffix = f"{part_mesh.n_cells:,}/{part_cells:,}" if part_cells else f"{part_mesh.n_cells:,}"
+            support_suffix = (
+                f"{support_mesh.n_cells:,}/{support_cells:,}"
+                if support_cells
+                else f"{support_mesh.n_cells:,}"
+            )
+            display_suffix = (
+                f", overhang 0-{overhang_limit:g} deg"
+                if display_mode == "Overhang angle"
+                else ""
+            )
+            self._title.setText(
+                f"CAD + Support: {Path(part_path).name} + {Path(support_path).name} "
+                f"(cells {part_suffix}, support {support_suffix}{display_suffix})"
+            )
+            self._status.setText("")
+        except Exception as exc:
+            self.show_message(f"Support overlay preview failed: {exc}")
+
+    def _add_shaded_cad_mesh(self, plotter, mesh) -> None:
+        plotter.add_mesh(
+            mesh,
+            color="#cbd5e1",
+            edge_color="#475569",
+            show_edges=mesh.n_cells <= 120_000,
+            smooth_shading=False,
+            lighting=True,
+            ambient=0.32,
+            diffuse=0.82,
+            specular=0.22,
+            specular_power=20,
+            silhouette={"color": "#1f2937", "line_width": 2.0},
+        )
 
     def set_stl_controls_visible(self, visible: bool) -> None:
         self._stl_controls_visible = bool(visible)

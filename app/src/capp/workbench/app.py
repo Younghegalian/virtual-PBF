@@ -198,6 +198,42 @@ class _StlPreviewWorker(QRunnable):
         self.signals.finished.emit(self.path, mesh, original_cells, elapsed)
 
 
+class _SupportOverlayPreviewWorkerSignals(QObject):
+    finished = Signal(str, object, int, str, object, int, float)
+    failed = Signal(str, str, str)
+
+
+class _SupportOverlayPreviewWorker(QRunnable):
+    def __init__(self, part_path: str, support_path: str) -> None:
+        super().__init__()
+        self.part_path = part_path
+        self.support_path = support_path
+        self.signals = _SupportOverlayPreviewWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from capp.workbench.preview import prepare_stl_preview_mesh
+
+            started = perf_counter()
+            part_mesh, part_cells = prepare_stl_preview_mesh(self.part_path)
+            support_mesh, support_cells = prepare_stl_preview_mesh(self.support_path)
+            elapsed = perf_counter() - started
+        except Exception as exc:
+            self.signals.failed.emit(self.part_path, self.support_path, str(exc))
+            return
+
+        self.signals.finished.emit(
+            self.part_path,
+            part_mesh,
+            part_cells,
+            self.support_path,
+            support_mesh,
+            support_cells,
+            elapsed,
+        )
+
+
 class _SimulationWorkerSignals(QObject):
     finished = Signal(object, object)
     failed = Signal(object, str)
@@ -288,6 +324,7 @@ class _VoxelizationWorker(QRunnable):
                 getattr(self.config, "support_geometry_path", None),
                 self.config.voxel_spacing,
                 getattr(self.config, "support_type", "Volume support"),
+                support_generation=getattr(self.config, "support_generation", None),
                 progress_callback=progress,
             )
         except Exception as exc:
@@ -296,6 +333,85 @@ class _VoxelizationWorker(QRunnable):
 
         self.signals.progress.emit(100, "Voxelization complete")
         self.signals.finished.emit(self.config, grid, grid.data)
+
+
+class _GeneratedSupportWorkerSignals(QObject):
+    finished = Signal(object, str, object)
+    failed = Signal(object, str)
+    progress = Signal(int, str)
+
+
+class _GeneratedSupportWorker(QRunnable):
+    def __init__(
+        self,
+        request_signature: tuple[object, ...],
+        geometry_path: str,
+        spacing: float,
+        support_generation,
+        output_path: str,
+    ) -> None:
+        super().__init__()
+        self.request_signature = request_signature
+        self.geometry_path = geometry_path
+        self.spacing = spacing
+        self.support_generation = support_generation
+        self.output_path = output_path
+        self.signals = _GeneratedSupportWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from capp.geometry.voxelizer import generate_overhang_support_grid, voxelize_mesh
+            from capp.io.exports import write_binary_stl, write_surface_stl
+
+            def part_progress(percent: int, message: str) -> None:
+                self.signals.progress.emit(
+                    int(percent * 0.42),
+                    f"Part: {message}",
+                )
+
+            def support_progress(percent: int, message: str) -> None:
+                self.signals.progress.emit(
+                    44 + int(percent * 0.42),
+                    f"Support: {message}",
+                )
+
+            part_grid = voxelize_mesh(
+                self.geometry_path,
+                self.spacing,
+                progress_callback=part_progress,
+            )
+            support_grid = generate_overhang_support_grid(
+                self.geometry_path,
+                part_grid,
+                self.support_generation,
+                progress_callback=support_progress,
+            )
+            self.signals.progress.emit(90, "Writing generated support STL")
+            build_plate_z = self.support_generation.build_plate_z
+            if self.support_generation.support_type == "X surface support":
+                write_surface_stl(
+                    self.output_path,
+                    support_grid.data,
+                    support_grid.spacing,
+                    support_grid.origin,
+                    bottom_z=build_plate_z,
+                )
+            else:
+                write_binary_stl(
+                    self.output_path,
+                    support_grid.data,
+                    support_grid.spacing,
+                    support_grid.origin,
+                    clip_min_z=build_plate_z,
+                    voxel_bounds=True,
+                )
+        except Exception as exc:
+            self.signals.failed.emit(self.request_signature, str(exc))
+            return
+
+        self.signals.progress.emit(100, "Generated support STL ready")
+        self.signals.finished.emit(self.request_signature, self.output_path, support_grid)
 
 
 class _GeometryDeviationWorkerSignals(QObject):
@@ -672,9 +788,15 @@ class WorkbenchMainWindow:
         self._cursor_busy = False
         self._simulation_worker = None
         self._voxelization_worker = None
+        self._generated_support_worker = None
         self._geometry_deviation_worker = None
         self._stl_preview_worker = None
+        self._support_overlay_preview_worker = None
+        self._stl_preview_expected_path = None
         self._last_stl_preview = None
+        self._last_support_overlay_preview = None
+        self._last_generated_support_path = None
+        self._last_generated_support_signature = None
         self._save_outputs_worker = None
         self._model_calibration_worker = None
         self._save_model_calibration_worker = None
@@ -1336,6 +1458,11 @@ class WorkbenchMainWindow:
         support_form = QFormLayout(self._support_options_panel)
         self._configure_form(support_form)
 
+        self._support_source = QComboBox()
+        self._support_source.addItems(["Generate from overhang", "External STL"])
+        self._support_source.currentTextChanged.connect(self._on_support_source_changed)
+        support_form.addRow("Support source", self._support_source)
+
         self._support_geometry = QLineEdit()
         self._support_geometry.textChanged.connect(self._invalidate_voxelization)
         support_form.addRow(
@@ -1344,10 +1471,41 @@ class WorkbenchMainWindow:
         )
 
         self._support_type = QComboBox()
-        self._support_type.addItems(["Line support", "Volume support"])
-        self._support_type.setCurrentText("Volume support")
-        self._support_type.currentTextChanged.connect(self._invalidate_voxelization)
+        self._support_type.currentTextChanged.connect(self._on_support_type_changed)
         support_form.addRow("Support type", self._support_type)
+
+        self._support_overhang_angle = QLineEdit("60")
+        self._support_pitch = QLineEdit("2.0")
+        self._support_thickness = QLineEdit("0.5")
+        self._support_footprint_offset = QLineEdit("0.5")
+        self._support_build_plate_z = QLineEdit("0")
+        self._support_generation_fields = [
+            self._support_overhang_angle,
+            self._support_pitch,
+            self._support_thickness,
+            self._support_footprint_offset,
+            self._support_build_plate_z,
+        ]
+        for field in self._support_generation_fields:
+            field.textChanged.connect(self._invalidate_voxelization)
+        support_form.addRow("Overhang angle (deg)", self._support_overhang_angle)
+        support_form.addRow("Pitch (mm)", self._support_pitch)
+        support_form.addRow("Thickness (mm)", self._support_thickness)
+        support_form.addRow("Footprint offset XY (mm)", self._support_footprint_offset)
+        support_form.addRow("Build plate Z (mm)", self._support_build_plate_z)
+        support_action_row = QHBoxLayout()
+        support_action_row.setContentsMargins(0, 0, 0, 0)
+        support_action_row.setSpacing(4)
+        generate_support = QPushButton("Generate Support")
+        generate_support.clicked.connect(self._generate_support_preview)
+        self._generate_support_button = generate_support
+        clear_support = QPushButton("Clear Support")
+        clear_support.clicked.connect(self._clear_support_selection)
+        self._clear_support_button = clear_support
+        support_action_row.addWidget(generate_support)
+        support_action_row.addWidget(clear_support)
+        support_form.addRow("", support_action_row)
+        self._refresh_support_type_options()
         geometry_form.addRow("", self._support_options_panel)
 
         self._grid_spacing = QLineEdit("0.5")
@@ -1502,7 +1660,7 @@ class WorkbenchMainWindow:
         self._processor = QComboBox()
         self._processor.currentIndexChanged.connect(self._update_backend_status_label)
         self._processor_status = QLabel()
-        self._processor_status.setWordWrap(True)
+        self._processor_status.setWordWrap(False)
         self._processor_status.setObjectName("BackendStatus")
         refresh_devices = QPushButton("Validate")
         refresh_devices.clicked.connect(lambda: self._refresh_compute_backends(log=True))
@@ -1605,6 +1763,7 @@ class WorkbenchMainWindow:
     def _build_results_page(self):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
+            QCheckBox,
             QComboBox,
             QFormLayout,
             QGroupBox,
@@ -1661,6 +1820,11 @@ class WorkbenchMainWindow:
         self._result_volume_choice.addItems(["Binary", "Probability"])
         self._result_volume_choice.currentTextChanged.connect(self._refresh_result_views)
         form.addRow("Volume", self._result_volume_choice)
+
+        self._result_hide_support = QCheckBox("Remove support")
+        self._result_hide_support.setEnabled(False)
+        self._result_hide_support.stateChanged.connect(self._result_support_visibility_changed)
+        form.addRow("Support", self._result_hide_support)
 
         self._slice_axis = QComboBox()
         self._slice_axis.addItems(["Z", "X", "Y"])
@@ -1842,7 +2006,7 @@ class WorkbenchMainWindow:
         solver_form.addRow("Solver", processor_row)
         self._calibration_processor_status = QLabel()
         self._calibration_processor_status.setObjectName("BackendStatus")
-        self._calibration_processor_status.setWordWrap(True)
+        self._calibration_processor_status.setWordWrap(False)
         solver_form.addRow("Device status", self._calibration_processor_status)
         left_layout.addWidget(solver_box)
 
@@ -2532,6 +2696,9 @@ class WorkbenchMainWindow:
             self._support_geometry.setText(path)
             self._append_log(f"Support geometry selected: {path}")
             self._invalidate_voxelization()
+            part_path = self._part_geometry.text().strip()
+            if part_path and Path(part_path).exists():
+                self._preview_support_overlay(part_path, path)
 
     def _browse_output_dir(self) -> None:
         path = self._QFileDialog.getExistingDirectory(
@@ -2881,6 +3048,28 @@ class WorkbenchMainWindow:
             self._show_result_preview_from_cache()
 
     def _show_stl_preview_from_cache(self) -> None:
+        if self._last_support_overlay_preview is not None:
+            mode, overhang_limit = self._stl_preview_display_settings()
+            (
+                part_path,
+                part_mesh,
+                part_cells,
+                support_path,
+                support_mesh,
+                support_cells,
+            ) = self._last_support_overlay_preview
+            self._preview.show_stl_overlay_mesh(
+                part_path,
+                part_mesh,
+                part_cells,
+                support_path,
+                support_mesh,
+                support_cells,
+                display_mode=mode,
+                overhang_limit=overhang_limit,
+            )
+            return
+
         if self._last_stl_preview is not None:
             path, mesh, original_cells = self._last_stl_preview
             mode, overhang_limit = self._stl_preview_display_settings()
@@ -2931,11 +3120,17 @@ class WorkbenchMainWindow:
         if not Path(path).exists():
             self._append_log(f"STL preview skipped: file not found ({path})")
             return
+        self._preview_stl_path(path, "Preparing STL preview")
+
+    def _preview_stl_path(self, path: str | Path, message: str = "Preparing STL preview") -> None:
+        preview_path = Path(path)
+        self._last_support_overlay_preview = None
         self._last_stl_preview = None
+        self._stl_preview_expected_path = str(preview_path.resolve())
         self._set_preview_source("STL")
-        self._append_log(f"Preparing STL preview: {path}")
+        self._append_log(f"{message}: {preview_path}")
         self._preview.show_message("Loading STL preview...")
-        worker = _StlPreviewWorker(path)
+        worker = _StlPreviewWorker(str(preview_path))
         worker.signals.finished.connect(self._stl_preview_finished)
         worker.signals.failed.connect(self._stl_preview_failed)
         self._stl_preview_worker = worker
@@ -2950,7 +3145,10 @@ class WorkbenchMainWindow:
         return mode, max(1.0, overhang_limit)
 
     def _refresh_stl_preview_style(self) -> None:
-        if self._last_stl_preview is None or not hasattr(self, "_preview"):
+        if (
+            self._last_stl_preview is None
+            and self._last_support_overlay_preview is None
+        ) or not hasattr(self, "_preview"):
             return
         self._set_preview_source("STL")
         mode = self._preview.stl_display_mode.currentText()
@@ -2965,9 +3163,9 @@ class WorkbenchMainWindow:
         elapsed_seconds: float,
     ) -> None:
         self._stl_preview_worker = None
-        current_path = self._part_geometry.text().strip()
-        if str(Path(path).resolve()) != str(Path(current_path).resolve()):
-            self._append_log("STL preview discarded because the selected geometry changed.")
+        expected_path = getattr(self, "_stl_preview_expected_path", None)
+        if expected_path and str(Path(path).resolve()) != expected_path:
+            self._append_log("STL preview discarded because the preview target changed.")
             return
         self._last_stl_preview = (path, mesh, original_cells)
         self._set_preview_source("STL")
@@ -2979,11 +3177,72 @@ class WorkbenchMainWindow:
 
     def _stl_preview_failed(self, path: str, message: str) -> None:
         self._stl_preview_worker = None
-        current_path = self._part_geometry.text().strip()
-        if current_path and str(Path(path).resolve()) != str(Path(current_path).resolve()):
+        expected_path = getattr(self, "_stl_preview_expected_path", None)
+        if expected_path and str(Path(path).resolve()) != expected_path:
             return
         self._append_log(f"STL preview failed: {message}")
         self._preview.show_message(f"STL preview failed: {message}")
+        self._update_preview_source_availability()
+
+    def _preview_support_overlay(self, part_path: str | Path, support_path: str | Path) -> None:
+        self._last_stl_preview = None
+        self._last_support_overlay_preview = None
+        self._set_preview_source("STL")
+        part = str(Path(part_path).resolve())
+        support = str(Path(support_path).resolve())
+        self._append_log(f"Preparing CAD + support preview: {part} + {support}")
+        self._preview.show_message("Loading CAD + support preview...")
+        worker = _SupportOverlayPreviewWorker(part, support)
+        worker.signals.finished.connect(self._support_overlay_preview_finished)
+        worker.signals.failed.connect(self._support_overlay_preview_failed)
+        self._support_overlay_preview_worker = worker
+        self._thread_pool.start(worker)
+
+    def _support_overlay_preview_finished(
+        self,
+        part_path: str,
+        part_mesh,
+        part_cells: int,
+        support_path: str,
+        support_mesh,
+        support_cells: int,
+        elapsed_seconds: float,
+    ) -> None:
+        self._support_overlay_preview_worker = None
+        expected_support = getattr(self, "_last_generated_support_path", None)
+        if expected_support is not None and str(Path(support_path).resolve()) != str(
+            expected_support.resolve()
+        ):
+            self._append_log("CAD + support preview discarded because the support target changed.")
+            return
+        self._last_support_overlay_preview = (
+            part_path,
+            part_mesh,
+            part_cells,
+            support_path,
+            support_mesh,
+            support_cells,
+        )
+        self._set_preview_source("STL")
+        self._show_stl_preview_from_cache()
+        self._append_log(
+            "CAD + support preview ready: "
+            f"{Path(part_path).name} + {Path(support_path).name}, "
+            f"{elapsed_seconds:.2f} s"
+        )
+
+    def _support_overlay_preview_failed(
+        self,
+        part_path: str,
+        support_path: str,
+        message: str,
+    ) -> None:
+        self._support_overlay_preview_worker = None
+        self._append_log(
+            f"CAD + support preview failed for {Path(part_path).name} + "
+            f"{Path(support_path).name}: {message}"
+        )
+        self._preview.show_message(f"CAD + support preview failed: {message}")
         self._update_preview_source_availability()
 
     def _preview_result(self) -> None:
@@ -3077,12 +3336,34 @@ class WorkbenchMainWindow:
 
             data = np.load(path)
             source_geometry = self._result_source_geometry_from_npz(data)
+            voxel = data["voxel"].astype(bool)
+            support_mask = (
+                data["support_mask"].astype(bool)
+                if "support_mask" in data.files
+                else np.zeros_like(voxel, dtype=bool)
+            )
             self._loaded_result = {
                 "probability": data["probability"],
                 "binary": data["binary"].astype(bool),
-                "voxel": data["voxel"].astype(bool),
+                "voxel": voxel,
+                "support_mask": support_mask,
                 "spacing": float(data["spacing"][0]),
                 "origin": tuple(float(v) for v in data["origin"]),
+                "rest_volume": (
+                    float(data["rest_volume"][0])
+                    if "rest_volume" in data.files
+                    else 0.0
+                ),
+                "probability_density": (
+                    float(data["probability_density"][0])
+                    if "probability_density" in data.files
+                    else 0.0
+                ),
+                "elapsed_seconds": (
+                    float(data["elapsed_seconds"][0])
+                    if "elapsed_seconds" in data.files
+                    else 0.0
+                ),
                 "path": Path(path),
                 "source_geometry": source_geometry,
             }
@@ -3110,8 +3391,12 @@ class WorkbenchMainWindow:
             "probability": result.probability,
             "binary": result.binary,
             "voxel": result.voxel,
+            "support_mask": result.support_mask,
             "spacing": result.spacing,
             "origin": result.origin,
+            "rest_volume": result.rest_volume,
+            "probability_density": result.probability_density,
+            "elapsed_seconds": result.elapsed_seconds,
             "path": None,
             "source_geometry": result.source_geometry,
         }
@@ -3140,6 +3425,36 @@ class WorkbenchMainWindow:
             self._deviation_button.setEnabled(enabled)
         if hasattr(self, "_result_display_preview_button"):
             self._result_display_preview_button.setEnabled(enabled)
+        if hasattr(self, "_result_hide_support"):
+            support_mask = self._loaded_support_mask()
+            self._result_hide_support.setEnabled(enabled and bool(support_mask.any()))
+
+    def _loaded_support_mask(self):
+        import numpy as np
+
+        if self._loaded_result is None:
+            return np.zeros((1, 1, 1), dtype=bool)
+        voxel = self._loaded_result["voxel"]
+        support_mask = self._loaded_result.get("support_mask")
+        if support_mask is None:
+            return np.zeros_like(voxel, dtype=bool)
+        return np.asarray(support_mask, dtype=bool)
+
+    def _result_support_hidden(self) -> bool:
+        return (
+            hasattr(self, "_result_hide_support")
+            and self._result_hide_support.isChecked()
+            and bool(self._loaded_support_mask().any())
+        )
+
+    def _result_support_removed(self) -> bool:
+        return self._result_support_hidden()
+
+    def _result_support_visibility_changed(self, *_args) -> None:
+        if self._loaded_result is None:
+            return
+        self._mark_loaded_result_changed()
+        self._refresh_result_views()
 
     def _refresh_result_views(self, *_args) -> None:
         if self._loaded_result is None:
@@ -3172,6 +3487,8 @@ class WorkbenchMainWindow:
         else:
             preview_volume = volume.astype(bool)
             label = name
+        if self._result_support_removed():
+            label = f"{label} (support removed)"
         self._append_log(f"Previewing result volume: {label}")
         try:
             self._result_preview.show_voxels(
@@ -3215,6 +3532,8 @@ class WorkbenchMainWindow:
             return
         volume = self._selected_result_volume()
         label = self._result_volume_choice.currentText()
+        if self._result_support_removed():
+            label = f"{label} (support removed)"
         self._append_log(f"Rendering geometry deviation heatmap: {stl_path}")
         self._deviation_summary.setText("Preparing geometry deviation...")
         self._set_busy(True, "Preparing geometry deviation...", task="geometry_deviation")
@@ -3315,9 +3634,17 @@ class WorkbenchMainWindow:
         if self._loaded_result is None:
             raise ValueError("No result loaded.")
         choice = self._result_volume_choice.currentText()
+        support_mask = self._loaded_support_mask()
+        hide_support = self._result_support_removed()
         if choice.startswith("Binary"):
-            return self._loaded_result["binary"]
-        return self._loaded_result["probability"]
+            volume = self._loaded_result["binary"]
+            return volume & ~support_mask if hide_support else volume
+        volume = self._loaded_result["probability"]
+        if not hide_support:
+            return volume
+        masked = volume.copy()
+        masked[support_mask] = 0
+        return masked
 
     def _array_to_pixmap(self, image, *, colorize: bool = False):
         import numpy as np
@@ -3440,9 +3767,10 @@ class WorkbenchMainWindow:
         status = getattr(self, "_backend_statuses", {}).get(self._processor.currentData())
         if status is None:
             self._processor_status.setText("Backend status not validated.")
+            self._processor_status.setToolTip("")
             return
-        state = "Available" if status.available else "Unavailable"
-        self._processor_status.setText(f"{state}. {status.detail}")
+        self._processor_status.setText(self._backend_status_line(status))
+        self._processor_status.setToolTip(status.detail)
 
     def _selected_solver_backend(self):
         from capp.domain import SolverBackend
@@ -3502,12 +3830,13 @@ class WorkbenchMainWindow:
         )
         if status is None:
             self._calibration_processor_status.setText("Solver status not validated.")
+            self._calibration_processor_status.setToolTip("")
             return
-        state = "Available" if status.available else "Unavailable"
         if hasattr(self, "_calibration_parallel_samples"):
             self._calibration_parallel_samples.setEnabled(True)
             self._calibration_parallel_samples.setToolTip("")
-        self._calibration_processor_status.setText(f"{state}. {status.detail}")
+        self._calibration_processor_status.setText(self._backend_status_line(status))
+        self._calibration_processor_status.setToolTip(status.detail)
 
     def _selected_calibration_backend(self):
         from capp.domain import SolverBackend
@@ -3515,6 +3844,10 @@ class WorkbenchMainWindow:
         return SolverBackend(
             self._calibration_processor.currentData() or SolverBackend.CPU_REFERENCE.value
         )
+
+    def _backend_status_line(self, status) -> str:
+        state = "ready" if status.available else "unavailable"
+        return f"{status.label}: {state}"
 
     def _solver_label(self, backend_value: str) -> str:
         status = getattr(self, "_backend_statuses", {}).get(backend_value)
@@ -3538,6 +3871,35 @@ class WorkbenchMainWindow:
         self._update_support_controls(value)
         self._invalidate_voxelization()
 
+    def _on_support_source_changed(self, *_args) -> None:
+        self._refresh_support_type_options()
+        self._update_support_controls(self._part_type.currentText())
+        self._invalidate_voxelization()
+
+    def _on_support_type_changed(self, *_args) -> None:
+        self._update_support_controls(self._part_type.currentText())
+        self._invalidate_voxelization()
+
+    def _refresh_support_type_options(self) -> None:
+        if not hasattr(self, "_support_type"):
+            return
+        source = (
+            self._support_source.currentText()
+            if hasattr(self, "_support_source")
+            else "External STL"
+        )
+        options = (
+            ["X surface support", "Column support", "Volume support"]
+            if source == "Generate from overhang"
+            else ["Volume support", "Line support"]
+        )
+        current = self._support_type.currentText()
+        self._support_type.blockSignals(True)
+        self._support_type.clear()
+        self._support_type.addItems(options)
+        self._support_type.setCurrentText(current if current in options else options[0])
+        self._support_type.blockSignals(False)
+
     def _toggle_support_options(self, checked: bool) -> None:
         self._update_support_controls(self._part_type.currentText(), expanded=checked)
 
@@ -3549,10 +3911,37 @@ class WorkbenchMainWindow:
         if expanded is None:
             expanded = bool(self._support_options_toggle.isChecked())
         panel_visible = support_enabled and bool(expanded)
+        source = (
+            self._support_source.currentText()
+            if hasattr(self, "_support_source")
+            else "External STL"
+        )
+        generated_enabled = support_enabled and source == "Generate from overhang"
+        external_enabled = support_enabled and source == "External STL"
 
         self._support_options_toggle.setEnabled(support_enabled)
-        self._support_geometry.setEnabled(support_enabled)
+        if hasattr(self, "_support_source"):
+            self._support_source.setEnabled(support_enabled)
+        self._support_geometry.setEnabled(external_enabled)
+        browse_button = getattr(self._support_geometry, "_browse_button", None)
+        if browse_button is not None:
+            browse_button.setEnabled(external_enabled)
         self._support_type.setEnabled(support_enabled)
+        for field in getattr(self, "_support_generation_fields", []):
+            field.setEnabled(generated_enabled)
+        if hasattr(self, "_support_thickness"):
+            support_type = (
+                self._support_type.currentText()
+                if hasattr(self._support_type, "currentText")
+                else ""
+            )
+            self._support_thickness.setEnabled(
+                generated_enabled and support_type != "X surface support"
+            )
+        if hasattr(self, "_generate_support_button"):
+            self._generate_support_button.setEnabled(generated_enabled and not self._busy)
+        if hasattr(self, "_clear_support_button"):
+            self._clear_support_button.setEnabled(support_enabled and not self._busy)
         self._support_options_panel.setVisible(panel_visible)
 
         text = "Hide support options" if panel_visible else "Show support options"
@@ -3564,6 +3953,191 @@ class WorkbenchMainWindow:
                 else self._Qt.ArrowType.RightArrow
             )
             self._support_options_toggle.setArrowType(arrow)
+
+    def _support_generation_from_form(self):
+        from capp.domain import SupportGenerationParameters
+
+        build_plate_text = self._support_build_plate_z.text().strip()
+        support_type = self._support_type.currentText()
+        thickness = (
+            1.0
+            if support_type == "X surface support"
+            else self._float(self._support_thickness, "Support thickness")
+        )
+        return SupportGenerationParameters(
+            support_type=support_type,
+            overhang_angle=self._float(
+                self._support_overhang_angle,
+                "Support overhang angle",
+            ),
+            pitch=self._float(self._support_pitch, "Support pitch"),
+            thickness=thickness,
+            footprint_offset=self._float(
+                self._support_footprint_offset,
+                "Support footprint offset",
+            ),
+            build_plate_z=(
+                None
+                if build_plate_text.lower() in {"", "auto"}
+                else self._float(self._support_build_plate_z, "Support build plate Z")
+            ),
+        )
+
+    def _support_generation_signature(
+        self,
+        geometry_path: Path,
+        spacing: float,
+        options,
+    ) -> tuple[object, ...]:
+        return (
+            str(geometry_path.resolve()),
+            float(spacing),
+            options.support_type,
+            float(options.overhang_angle),
+            float(options.pitch),
+            float(options.thickness),
+            float(options.footprint_offset),
+            options.build_plate_z,
+        )
+
+    def _generated_support_stl_path(self, geometry_path: Path) -> Path:
+        output_dir = Path(self._output_dir.text().strip() or "examples/outputs/gui_simulation")
+        return output_dir / "generated_support" / f"{geometry_path.stem}_support.stl"
+
+    def _active_generated_support_options(self):
+        if self._part_type.currentText() != "Part & Support":
+            return None
+        if self._support_source.currentText() != "Generate from overhang":
+            return None
+        try:
+            geometry_path = Path(self._part_geometry.text().strip())
+            spacing = self._float(self._grid_spacing, "Grid spacing")
+            options = self._support_generation_from_form()
+            signature = self._support_generation_signature(geometry_path, spacing, options)
+        except Exception:
+            return None
+        if signature != getattr(self, "_last_generated_support_signature", None):
+            return None
+        support_path = getattr(self, "_last_generated_support_path", None)
+        if support_path is None or not Path(support_path).exists():
+            return None
+        return options
+
+    def _active_generated_support_path_and_options(self):
+        options = self._active_generated_support_options()
+        if options is None:
+            return None
+        return Path(self._last_generated_support_path), options
+
+    def _clear_support_selection(self) -> None:
+        self._last_generated_support_path = None
+        self._last_generated_support_signature = None
+        self._last_support_overlay_preview = None
+        self._support_geometry.blockSignals(True)
+        self._support_geometry.setText("")
+        self._support_geometry.blockSignals(False)
+        if hasattr(self._part_type, "setCurrentText"):
+            self._part_type.setCurrentText("Part only")
+        self._invalidate_voxelization()
+        self._append_log(
+            "Support cleared. Part type is now Part only; switch back to Part & Support "
+            "to generate or select support."
+        )
+        part_path = self._part_geometry.text().strip()
+        if part_path and Path(part_path).exists():
+            self._preview_part_geometry()
+
+    def _generate_support_preview(self) -> None:
+        if self._busy:
+            self._append_log("A task is already in progress.")
+            return
+        if self._part_type.currentText() != "Part & Support":
+            self._QMessageBox.warning(
+                self._window,
+                "Support disabled",
+                "Select Part & Support before generating support.",
+            )
+            return
+        if self._support_source.currentText() != "Generate from overhang":
+            self._QMessageBox.warning(
+                self._window,
+                "External support selected",
+                "Select Generate from overhang before generating support.",
+            )
+            return
+        try:
+            geometry_path = Path(self._part_geometry.text().strip())
+            if not geometry_path.exists():
+                raise ValueError("Select a valid part geometry STL file.")
+            spacing = self._float(self._grid_spacing, "Grid spacing")
+            options = self._support_generation_from_form()
+            output_path = self._generated_support_stl_path(geometry_path)
+            request_signature = self._support_generation_signature(
+                geometry_path,
+                spacing,
+                options,
+            )
+        except Exception as exc:
+            self._QMessageBox.warning(self._window, "Invalid input", str(exc))
+            return
+
+        self._append_log(
+            f"Generating support STL: {output_path} "
+            f"({options.support_type}, overhang <= {options.overhang_angle:g} deg)"
+        )
+        self._set_busy(True, "Generating support...", task="support_generation")
+        worker = _GeneratedSupportWorker(
+            request_signature,
+            str(geometry_path),
+            spacing,
+            options,
+            str(output_path),
+        )
+        worker.signals.progress.connect(self._set_task_progress)
+        worker.signals.finished.connect(self._generated_support_finished)
+        worker.signals.failed.connect(self._generated_support_failed)
+        self._generated_support_worker = worker
+        self._thread_pool.start(worker)
+
+    def _generated_support_finished(self, request_signature, path: str, support_grid) -> None:
+        self._generated_support_worker = None
+        try:
+            geometry_path = Path(self._part_geometry.text().strip())
+            spacing = self._float(self._grid_spacing, "Grid spacing")
+            options = self._support_generation_from_form()
+            is_stale = request_signature != self._support_generation_signature(
+                geometry_path,
+                spacing,
+                options,
+            )
+        except Exception:
+            is_stale = True
+        if is_stale:
+            self._set_busy(False, "Generated support discarded")
+            self._append_log("Generated support discarded because the settings changed.")
+            return
+
+        self._last_generated_support_path = Path(path)
+        self._last_generated_support_signature = request_signature
+        self._support_geometry.blockSignals(True)
+        self._support_geometry.setText(path)
+        self._support_geometry.blockSignals(False)
+        self._set_busy(False, "Support STL generated")
+        if support_grid.filled_count <= 0:
+            self._append_log(f"Generated support STL is empty: {path}")
+            self._preview.show_message("No support voxels were generated for the current overhang settings.")
+            return
+        self._append_log(
+            f"Generated support STL ready: {path}, filled voxels={support_grid.filled_count}"
+        )
+        self._preview_support_overlay(geometry_path, path)
+
+    def _generated_support_failed(self, _request_signature, message: str) -> None:
+        self._generated_support_worker = None
+        self._last_generated_support_signature = None
+        self._set_busy(False, "Support generation failed")
+        self._append_log(f"Support generation failed: {message}")
+        self._QMessageBox.critical(self._window, "Support generation failed", message)
 
     def _set_parameter_defaults(self, value: str) -> None:
         is_simple = value == "SimpleVN"
@@ -4573,12 +5147,71 @@ class WorkbenchMainWindow:
         self._append_log(f"Error: {message}")
         self._QMessageBox.critical(self._window, "Simulation failed", message)
 
+    def _current_result_for_save(self):
+        if self._loaded_result is None:
+            if self._last_result is None:
+                raise ValueError("Run or load a simulation result first.")
+            return self._last_result
+
+        import numpy as np
+        from capp.domain import SimulationResult
+
+        probability = np.asarray(self._loaded_result["probability"], dtype=np.uint8)
+        binary = np.asarray(self._loaded_result["binary"], dtype=bool)
+        voxel = np.asarray(self._loaded_result["voxel"], dtype=bool)
+        support_mask = self._loaded_support_mask()
+        rest_volume = float(self._loaded_result.get("rest_volume", 0.0))
+        probability_density = float(self._loaded_result.get("probability_density", 0.0))
+        if self._result_support_removed():
+            probability = probability.copy()
+            probability[support_mask] = 0
+            binary = binary & ~support_mask
+            voxel = voxel & ~support_mask
+            support_mask = np.zeros_like(voxel, dtype=bool)
+            rest_volume, probability_density = self._result_volume_metrics(
+                probability,
+                binary,
+                voxel,
+            )
+
+        return SimulationResult(
+            probability=probability,
+            binary=binary,
+            voxel=voxel,
+            spacing=float(self._loaded_result["spacing"]),
+            origin=tuple(float(v) for v in self._loaded_result["origin"]),
+            rest_volume=rest_volume,
+            probability_density=probability_density,
+            elapsed_seconds=float(self._loaded_result.get("elapsed_seconds", 0.0)),
+            source_geometry=self._loaded_result.get("source_geometry"),
+            support_mask=support_mask,
+        )
+
+    def _result_volume_metrics(self, probability, binary, voxel) -> tuple[float, float]:
+        import numpy as np
+
+        solid_count = float(np.count_nonzero(voxel))
+        if solid_count <= 0.0:
+            return 0.0, 0.0
+        rest_volume = 100.0 * float(np.count_nonzero(binary)) / solid_count
+        probability_density = float((probability * voxel.astype(np.uint8)).sum() / solid_count)
+        return rest_volume, probability_density
+
     def _save_outputs(self) -> None:
         if self._busy:
             self._append_log("A task is already in progress.")
             return
-        if self._last_result is None:
-            self._QMessageBox.warning(self._window, "Missing result", "Run a simulation first.")
+        if self._loaded_result is None:
+            self._QMessageBox.warning(
+                self._window,
+                "Missing result",
+                "Run or load a simulation result first.",
+            )
+            return
+        try:
+            result = self._current_result_for_save()
+        except Exception as exc:
+            self._QMessageBox.warning(self._window, "Invalid result", str(exc))
             return
 
         output_text = self._output_dir.text().strip()
@@ -4588,9 +5221,10 @@ class WorkbenchMainWindow:
             output_dir = self._last_result_config.output_dir
         else:
             output_dir = Path("examples/outputs/gui_simulation")
-        self._append_log(f"Saving outputs to: {output_dir}")
+        suffix = " with support removed" if self._result_support_removed() else ""
+        self._append_log(f"Saving outputs{suffix} to: {output_dir}")
         self._set_busy(True, "Saving outputs...", task="save")
-        worker = _SaveOutputsWorker(output_dir, self._last_result)
+        worker = _SaveOutputsWorker(output_dir, result)
         worker.signals.progress.connect(self._set_task_progress)
         worker.signals.finished.connect(self._save_outputs_finished)
         worker.signals.failed.connect(self._save_outputs_failed)
@@ -4605,8 +5239,12 @@ class WorkbenchMainWindow:
             self._loaded_result["path"] = result_path
         self._result_npz_path.setText(str(result_path))
         self._output_label.setText(str(output_path))
-        self._files_label.setText("simulation_result.npz\nprobability.vtk\nbinary.vtk")
-        self._append_log("Saved simulation_result.npz, probability.vtk, binary.vtk")
+        self._files_label.setText(
+            "simulation_result.npz\nprobability.vtk\nbinary.vtk\nsupport_mask.vtk"
+        )
+        self._append_log(
+            "Saved simulation_result.npz, probability.vtk, binary.vtk, support_mask.vtk"
+        )
         self._set_busy(False, f"Saved: {output_path}")
 
     def _save_outputs_failed(self, _output_dir, message: str) -> None:
@@ -4644,10 +5282,24 @@ class WorkbenchMainWindow:
         self._voxelize_button.setText(
             "Voxelizing..." if busy and task == "voxelization" else "Voxelize Geometry"
         )
+        if hasattr(self, "_generate_support_button"):
+            can_generate_support = (
+                (not busy)
+                and self._part_type.currentText() == "Part & Support"
+                and self._support_source.currentText() == "Generate from overhang"
+            )
+            self._generate_support_button.setEnabled(can_generate_support)
+            self._generate_support_button.setText(
+                "Generating..." if busy and task == "support_generation" else "Generate Support"
+            )
+        if hasattr(self, "_clear_support_button"):
+            self._clear_support_button.setEnabled(
+                (not busy) and self._part_type.currentText() == "Part & Support"
+            )
         self._run_button.setEnabled((not busy) and self._last_voxel_grid is not None)
         self._preview_result_button.setEnabled((not busy) and self._last_result is not None)
 
-        can_save = (not busy) and self._last_result is not None
+        can_save = (not busy) and self._loaded_result is not None
         if hasattr(self, "_save_result_button"):
             self._save_result_button.setEnabled(can_save)
             self._save_result_button.setText(
@@ -4730,12 +5382,24 @@ class WorkbenchMainWindow:
         self._update_preview_source_availability()
         self._append_log("Voxelization cleared. Run voxelization again before simulation.")
 
-    def _voxel_signature(self, config) -> tuple[str, str, str, float]:
+    def _voxel_signature(self, config) -> tuple[object, ...]:
         support_path = getattr(config, "support_geometry_path", None)
+        support_generation = getattr(config, "support_generation", None)
+        generation_signature = None
+        if support_generation is not None:
+            generation_signature = (
+                support_generation.support_type,
+                float(support_generation.overhang_angle),
+                float(support_generation.pitch),
+                float(support_generation.thickness),
+                float(support_generation.footprint_offset),
+                support_generation.build_plate_z,
+            )
         return (
             str(config.geometry_path.resolve()),
             "" if support_path is None else str(Path(support_path).resolve()),
             str(getattr(config, "support_type", "")),
+            generation_signature,
             float(config.voxel_spacing),
         )
 
@@ -4754,11 +5418,22 @@ class WorkbenchMainWindow:
             raise ValueError("Select a valid part geometry STL file.")
         support_geometry_path = None
         support_type = "Volume support"
+        support_generation = None
         if self._part_type.currentText() == "Part & Support":
-            support_geometry_path = Path(self._support_geometry.text().strip())
-            if not support_geometry_path.exists():
-                raise ValueError("Select a valid support geometry STL file.")
             support_type = self._support_type.currentText()
+            if self._support_source.currentText() == "External STL":
+                support_geometry_path = Path(self._support_geometry.text().strip())
+                if not support_geometry_path.exists():
+                    raise ValueError("Select a valid support geometry STL file.")
+            else:
+                active_generated = self._active_generated_support_path_and_options()
+                if active_generated is not None:
+                    support_geometry_path, generated_options = active_generated
+                    support_type = (
+                        "Line support"
+                        if generated_options.support_type == "X surface support"
+                        else "Volume support"
+                    )
 
         neighborhood_text = self._neighborhood.currentText()
         if neighborhood_text == "SimpleVN":
@@ -4849,6 +5524,7 @@ class WorkbenchMainWindow:
             solver=solver,
             support_geometry_path=support_geometry_path,
             support_type=support_type,
+            support_generation=support_generation,
         )
 
     def _log_run_config(self, config) -> None:
@@ -4857,6 +5533,15 @@ class WorkbenchMainWindow:
         if getattr(config, "support_geometry_path", None) is not None:
             self._append_log(
                 f"Support path used: {config.support_geometry_path} ({config.support_type})"
+            )
+        support_generation = getattr(config, "support_generation", None)
+        if support_generation is not None:
+            self._append_log(
+                "Generated support: "
+                f"{support_generation.support_type}, "
+                f"overhang <= {support_generation.overhang_angle:g} deg, "
+                f"pitch {support_generation.pitch:g} mm, "
+                f"thickness {support_generation.thickness:g} mm"
             )
         self._append_log(f"Output directory: {config.output_dir}")
         self._append_log(f"Voxel spacing: {config.voxel_spacing:g} mm")

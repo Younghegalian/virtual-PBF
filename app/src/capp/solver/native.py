@@ -78,4 +78,5 @@ def _result_from_payload(
         rest_volume=float(payload["rest_volume"]),
         probability_density=float(payload["probability_density"]),
         elapsed_seconds=float(payload.get("elapsed_seconds", elapsed_seconds)),
+        support_mask=grid.support_mask,
     )

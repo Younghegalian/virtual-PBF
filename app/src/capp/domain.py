@@ -38,17 +38,53 @@ class SolverBackend(StrEnum):
 
 
 @dataclass(frozen=True)
+class SupportGenerationParameters:
+    support_type: str = "X surface support"
+    overhang_angle: float = 60.0
+    pitch: float = 2.0
+    thickness: float = 0.5
+    footprint_offset: float = 0.5
+    build_plate_z: float | None = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "support_type", str(self.support_type))
+        object.__setattr__(self, "overhang_angle", float(self.overhang_angle))
+        object.__setattr__(self, "pitch", float(self.pitch))
+        object.__setattr__(self, "thickness", float(self.thickness))
+        object.__setattr__(self, "footprint_offset", float(self.footprint_offset))
+        if self.build_plate_z is not None:
+            object.__setattr__(self, "build_plate_z", float(self.build_plate_z))
+        if not 0.0 <= self.overhang_angle <= 90.0:
+            raise ValueError("Support overhang angle must be between 0 and 90 degrees.")
+        if self.pitch <= 0:
+            raise ValueError("Support pitch must be positive.")
+        if self.thickness <= 0:
+            raise ValueError("Support thickness must be positive.")
+        if self.footprint_offset < 0:
+            raise ValueError("Support footprint offset cannot be negative.")
+
+
+@dataclass(frozen=True)
 class VoxelGrid:
     data: NDArray[np.bool_]
     spacing: float
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    support_mask: NDArray[np.bool_] | None = None
 
     def __post_init__(self) -> None:
         if self.data.ndim != 3:
             raise ValueError("VoxelGrid.data must be a 3D array.")
         if self.spacing <= 0:
             raise ValueError("VoxelGrid.spacing must be positive.")
-        object.__setattr__(self, "data", self.data.astype(bool, copy=False))
+        data = self.data.astype(bool, copy=False)
+        if self.support_mask is None:
+            support_mask = np.zeros(data.shape, dtype=bool)
+        else:
+            support_mask = np.asarray(self.support_mask, dtype=bool)
+            if support_mask.shape != data.shape:
+                raise ValueError("VoxelGrid.support_mask must match VoxelGrid.data shape.")
+        object.__setattr__(self, "data", data)
+        object.__setattr__(self, "support_mask", support_mask)
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -175,12 +211,20 @@ class SimulationResult:
     probability_density: float
     elapsed_seconds: float
     source_geometry: Path | None = None
+    support_mask: NDArray[np.bool_] | None = None
 
     def __post_init__(self) -> None:
         if self.probability.shape != self.binary.shape:
             raise ValueError("probability and binary arrays must have the same shape.")
         if self.probability.shape != self.voxel.shape:
             raise ValueError("probability and voxel arrays must have the same shape.")
+        if self.support_mask is None:
+            support_mask = np.zeros(self.voxel.shape, dtype=bool)
+        else:
+            support_mask = np.asarray(self.support_mask, dtype=bool)
+            if support_mask.shape != self.voxel.shape:
+                raise ValueError("support_mask must match simulation volume shape.")
         object.__setattr__(self, "probability", self.probability.astype(np.uint8, copy=False))
         object.__setattr__(self, "binary", self.binary.astype(bool, copy=False))
         object.__setattr__(self, "voxel", self.voxel.astype(bool, copy=False))
+        object.__setattr__(self, "support_mask", support_mask)
