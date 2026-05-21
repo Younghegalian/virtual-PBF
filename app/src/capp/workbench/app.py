@@ -172,6 +172,68 @@ def _roi_outline_rgb(target_array, simulated_array, background_array=None):
     return np.ascontiguousarray(rgb)
 
 
+def _generated_support_voxel_cache_path(support_path: str | Path) -> Path:
+    return Path(support_path).with_suffix(".voxels.npz")
+
+
+def _write_generated_support_grid_cache(
+    support_path: str | Path,
+    support_grid,
+    support_type: str,
+) -> Path:
+    import numpy as np
+
+    cache_path = _generated_support_voxel_cache_path(support_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        cache_path,
+        data=np.asarray(support_grid.data, dtype=np.uint8),
+        support_mask=np.asarray(support_grid.support_mask, dtype=np.uint8),
+        spacing=np.asarray([support_grid.spacing], dtype=np.float64),
+        origin=np.asarray(support_grid.origin, dtype=np.float64),
+        support_type=np.asarray([str(support_type)]),
+    )
+    return cache_path
+
+
+def _load_generated_support_grid_cache(support_path: str | Path):
+    import numpy as np
+
+    from capp.domain import VoxelGrid
+
+    cache_path = _generated_support_voxel_cache_path(support_path)
+    if not cache_path.exists():
+        return None, None
+    with np.load(cache_path) as payload:
+        data = np.asarray(payload["data"], dtype=bool)
+        support_mask = (
+            np.asarray(payload["support_mask"], dtype=bool)
+            if "support_mask" in payload.files
+            else data
+        )
+        spacing = float(np.asarray(payload["spacing"], dtype=np.float64).reshape(-1)[0])
+        origin_values = np.asarray(payload["origin"], dtype=np.float64).reshape(-1)
+        support_type = (
+            str(np.asarray(payload["support_type"]).reshape(-1)[0])
+            if "support_type" in payload.files
+            else None
+        )
+    origin = tuple(float(value) for value in origin_values[:3])
+    return VoxelGrid(data=data, spacing=spacing, origin=origin, support_mask=support_mask), support_type
+
+
+def _load_generated_support_cache_type(support_path: str | Path) -> str | None:
+    import numpy as np
+
+    cache_path = _generated_support_voxel_cache_path(support_path)
+    if not cache_path.exists():
+        return None
+    with np.load(cache_path) as payload:
+        if "support_type" not in payload.files:
+            return None
+        return str(np.asarray(payload["support_type"]).reshape(-1)[0])
+
+
 class _StlPreviewWorkerSignals(QObject):
     finished = Signal(str, object, int, float)
     failed = Signal(str, str)
@@ -306,27 +368,39 @@ class _VoxelizationWorkerSignals(QObject):
 
 
 class _VoxelizationWorker(QRunnable):
-    def __init__(self, config) -> None:
+    def __init__(self, config, generated_support_grid=None) -> None:
         super().__init__()
         self.config = config
+        self.generated_support_grid = generated_support_grid
         self.signals = _VoxelizationWorkerSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            from capp.geometry.voxelizer import voxelize_part_and_support
+            from capp.geometry.voxelizer import (
+                voxelize_part_and_support,
+                voxelize_part_with_support_grid,
+            )
 
             def progress(percent: int, message: str) -> None:
                 self.signals.progress.emit(percent, message)
 
-            grid = voxelize_part_and_support(
-                self.config.geometry_path,
-                getattr(self.config, "support_geometry_path", None),
-                self.config.voxel_spacing,
-                getattr(self.config, "support_type", "Volume support"),
-                support_generation=getattr(self.config, "support_generation", None),
-                progress_callback=progress,
-            )
+            if self.generated_support_grid is not None:
+                grid = voxelize_part_with_support_grid(
+                    self.config.geometry_path,
+                    self.generated_support_grid,
+                    self.config.voxel_spacing,
+                    progress_callback=progress,
+                )
+            else:
+                grid = voxelize_part_and_support(
+                    self.config.geometry_path,
+                    getattr(self.config, "support_geometry_path", None),
+                    self.config.voxel_spacing,
+                    getattr(self.config, "support_type", "Volume support"),
+                    support_generation=getattr(self.config, "support_generation", None),
+                    progress_callback=progress,
+                )
         except Exception as exc:
             self.signals.failed.emit(self.config, str(exc))
             return
@@ -406,11 +480,17 @@ class _GeneratedSupportWorker(QRunnable):
                     clip_min_z=build_plate_z,
                     voxel_bounds=True,
                 )
+            self.signals.progress.emit(96, "Writing generated support voxel cache")
+            _write_generated_support_grid_cache(
+                self.output_path,
+                support_grid,
+                self.support_generation.support_type,
+            )
         except Exception as exc:
             self.signals.failed.emit(self.request_signature, str(exc))
             return
 
-        self.signals.progress.emit(100, "Generated support STL ready")
+        self.signals.progress.emit(100, "Generated support ready")
         self.signals.finished.emit(self.request_signature, self.output_path, support_grid)
 
 
@@ -795,7 +875,9 @@ class WorkbenchMainWindow:
         self._stl_preview_expected_path = None
         self._last_stl_preview = None
         self._last_support_overlay_preview = None
+        self._last_generated_support_grid = None
         self._last_generated_support_path = None
+        self._last_generated_support_type = None
         self._last_generated_support_signature = None
         self._save_outputs_worker = None
         self._model_calibration_worker = None
@@ -1478,7 +1560,7 @@ class WorkbenchMainWindow:
         self._support_pitch = QLineEdit("2.0")
         self._support_thickness = QLineEdit("0.5")
         self._support_footprint_offset = QLineEdit("0.5")
-        self._support_build_plate_z = QLineEdit("0")
+        self._support_build_plate_z = QLineEdit("auto")
         self._support_generation_fields = [
             self._support_overhang_angle,
             self._support_pitch,
@@ -3100,6 +3182,7 @@ class WorkbenchMainWindow:
             spacing=self._last_voxel_grid.spacing,
             origin=self._last_voxel_grid.origin,
             label="Voxelization",
+            support_mask=self._last_voxel_grid.support_mask,
         )
 
     def _show_result_preview_from_cache(self) -> None:
@@ -3267,7 +3350,10 @@ class WorkbenchMainWindow:
             f"Voxelizing selected geometry: {config.geometry_path} at {config.voxel_spacing:g} mm"
         )
         self._set_busy(True, "Voxelizing geometry...", task="voxelization")
-        worker = _VoxelizationWorker(config)
+        generated_support_grid = self._cached_generated_support_grid_for_config(config)
+        if generated_support_grid is not None:
+            self._append_log("Using cached generated support grid for voxelization.")
+        worker = _VoxelizationWorker(config, generated_support_grid=generated_support_grid)
         worker.signals.progress.connect(self._set_task_progress)
         worker.signals.finished.connect(self._voxelization_finished)
         worker.signals.failed.connect(self._voxelization_failed)
@@ -3305,7 +3391,11 @@ class WorkbenchMainWindow:
         self._spacing_label.setText(f"{grid.spacing:g}")
         self._run_button.setEnabled(True)
         self._set_busy(False, "Voxelization complete")
-        self._append_log(f"Voxel grid ready: shape={grid.shape}, filled={grid.filled_count}")
+        support_voxels = int(grid.support_mask.sum())
+        self._append_log(
+            f"Voxel grid ready: shape={grid.shape}, filled={grid.filled_count}, "
+            f"support={support_voxels}"
+        )
 
     def _voxelization_failed(self, _config, message: str) -> None:
         self._voxelization_worker = None
@@ -4029,8 +4119,86 @@ class WorkbenchMainWindow:
             return None
         return Path(self._last_generated_support_path), options
 
+    def _generated_support_path_and_voxel_type(self):
+        if self._part_type.currentText() != "Part & Support":
+            return None
+        if self._support_source.currentText() != "Generate from overhang":
+            return None
+        support_path = getattr(self, "_last_generated_support_path", None)
+        if support_path is None:
+            support_text = self._support_geometry.text().strip()
+            support_path = Path(support_text) if support_text else None
+        if support_path is None or not Path(support_path).exists():
+            return None
+
+        generated_type = getattr(self, "_last_generated_support_type", None)
+        if generated_type is None:
+            signature = getattr(self, "_last_generated_support_signature", None)
+            if isinstance(signature, tuple) and len(signature) >= 3:
+                generated_type = signature[2]
+        if generated_type is None:
+            try:
+                generated_type = _load_generated_support_cache_type(support_path)
+            except Exception:
+                generated_type = None
+        if generated_type is None:
+            try:
+                generated_type = self._support_generation_from_form().support_type
+            except Exception:
+                generated_type = self._support_type.currentText()
+
+        voxel_type = "Line support" if generated_type == "X surface support" else "Volume support"
+        return Path(support_path), voxel_type
+
+    def _cached_generated_support_grid_for_config(self, config):
+        import numpy as np
+
+        support_path = getattr(config, "support_geometry_path", None)
+        if support_path is None:
+            return None
+        support_path = Path(support_path)
+        if not support_path.exists():
+            return None
+        cached_path = getattr(self, "_last_generated_support_path", None)
+        cached_grid = getattr(self, "_last_generated_support_grid", None)
+        if cached_path is not None:
+            if str(support_path.resolve()) != str(Path(cached_path).resolve()):
+                return None
+            try:
+                if cached_grid is not None and np.isclose(
+                    float(cached_grid.spacing),
+                    float(config.voxel_spacing),
+                ):
+                    return cached_grid
+            except Exception:
+                pass
+        else:
+            support_source = getattr(self, "_support_source", None)
+            if (
+                support_source is not None
+                and support_source.currentText() != "Generate from overhang"
+            ):
+                return None
+
+        try:
+            loaded_grid, loaded_type = _load_generated_support_grid_cache(support_path)
+            if loaded_grid is None:
+                return None
+            if not np.isclose(float(loaded_grid.spacing), float(config.voxel_spacing)):
+                return None
+        except Exception:
+            return None
+
+        self._last_generated_support_path = support_path
+        self._last_generated_support_grid = loaded_grid
+        if loaded_type:
+            self._last_generated_support_type = loaded_type
+        return loaded_grid
+
     def _clear_support_selection(self) -> None:
+        self._last_generated_support_grid = None
         self._last_generated_support_path = None
+        self._last_generated_support_type = None
         self._last_generated_support_signature = None
         self._last_support_overlay_preview = None
         self._support_geometry.blockSignals(True)
@@ -4117,7 +4285,9 @@ class WorkbenchMainWindow:
             self._append_log("Generated support discarded because the settings changed.")
             return
 
+        self._last_generated_support_grid = support_grid
         self._last_generated_support_path = Path(path)
+        self._last_generated_support_type = options.support_type
         self._last_generated_support_signature = request_signature
         self._support_geometry.blockSignals(True)
         self._support_geometry.setText(path)
@@ -4134,6 +4304,8 @@ class WorkbenchMainWindow:
 
     def _generated_support_failed(self, _request_signature, message: str) -> None:
         self._generated_support_worker = None
+        self._last_generated_support_grid = None
+        self._last_generated_support_type = None
         self._last_generated_support_signature = None
         self._set_busy(False, "Support generation failed")
         self._append_log(f"Support generation failed: {message}")
@@ -5426,14 +5598,9 @@ class WorkbenchMainWindow:
                 if not support_geometry_path.exists():
                     raise ValueError("Select a valid support geometry STL file.")
             else:
-                active_generated = self._active_generated_support_path_and_options()
-                if active_generated is not None:
-                    support_geometry_path, generated_options = active_generated
-                    support_type = (
-                        "Line support"
-                        if generated_options.support_type == "X surface support"
-                        else "Volume support"
-                    )
+                generated_support = self._generated_support_path_and_voxel_type()
+                if generated_support is not None:
+                    support_geometry_path, support_type = generated_support
 
         neighborhood_text = self._neighborhood.currentText()
         if neighborhood_text == "SimpleVN":

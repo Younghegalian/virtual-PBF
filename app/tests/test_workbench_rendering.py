@@ -2,15 +2,18 @@ from pathlib import Path
 
 import numpy as np
 
+from capp.domain import VoxelGrid
 from capp.workbench.app import (
     WorkbenchMainWindow,
     _default_machine_preset_library_root,
     _legacy_model_calibration_root,
+    _load_generated_support_grid_cache,
     _machine_map_preset_output_dir,
     _machine_preset_folder,
     _model_calibration_preset_output_dir,
     _roi_outline_rgb,
     _roi_overlay_rgb,
+    _write_generated_support_grid_cache,
     _workbench_colormap,
 )
 from capp.workbench.preview import PreviewPane
@@ -102,9 +105,13 @@ class _PreviewProbe:
         self.stl_display_mode = _ComboProbe(mode)
         self.overhang_limit = _TextFieldProbe(overhang_limit)
         self.overlay_kwargs = None
+        self.voxel_kwargs = None
 
     def show_stl_overlay_mesh(self, *args, **kwargs):
         self.overlay_kwargs = kwargs
+
+    def show_voxels(self, *args, **kwargs):
+        self.voxel_kwargs = kwargs
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -279,6 +286,25 @@ def test_support_overlay_uses_current_stl_display_settings():
     }
 
 
+def test_voxelization_preview_passes_support_mask():
+    data = np.ones((2, 2, 2), dtype=bool)
+    support_mask = np.zeros_like(data)
+    support_mask[0, 0, 0] = True
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._preview = _PreviewProbe()
+    view._last_voxel_grid = VoxelGrid(
+        data=data,
+        spacing=1.0,
+        origin=(0.0, 0.0, 0.0),
+        support_mask=support_mask,
+    )
+    view._last_voxel_preview_data = None
+
+    view._show_voxelization_preview_from_cache()
+
+    assert np.array_equal(view._preview.voxel_kwargs["support_mask"], support_mask)
+
+
 def test_backend_status_line_is_compact():
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
     status = type("StatusProbe", (), {"label": "PBF X", "available": False})()
@@ -350,6 +376,108 @@ def test_generated_support_is_inactive_until_button_result_matches(tmp_path):
     )
 
     assert view._active_generated_support_options() == options
+
+
+def test_generated_support_path_is_used_even_when_options_are_stale(tmp_path):
+    support = tmp_path / "support.stl"
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._last_generated_support_path = support
+    view._last_generated_support_type = "X surface support"
+    view._last_generated_support_signature = None
+
+    assert view._generated_support_path_and_voxel_type() == (support, "Line support")
+
+
+def test_generated_support_path_uses_sidecar_type_when_state_is_missing(tmp_path):
+    support = tmp_path / "support.stl"
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    data = np.ones((1, 1, 1), dtype=bool)
+    _write_generated_support_grid_cache(
+        support,
+        VoxelGrid(data, spacing=0.5, support_mask=data),
+        "X surface support",
+    )
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._support_geometry = _TextFieldProbe(str(support))
+    view._support_type = _ComboProbe("Volume support")
+    view._last_generated_support_path = None
+    view._last_generated_support_type = None
+    view._last_generated_support_signature = None
+
+    assert view._generated_support_path_and_voxel_type() == (support, "Line support")
+
+
+def test_cached_generated_support_grid_is_reused_for_matching_config(tmp_path):
+    support = tmp_path / "support.stl"
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
+    config = type(
+        "ConfigProbe",
+        (),
+        {"support_geometry_path": support, "voxel_spacing": 0.5},
+    )()
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = grid
+
+    assert view._cached_generated_support_grid_for_config(config) is grid
+
+
+def test_cached_generated_support_grid_can_load_sidecar_cache(tmp_path):
+    support = tmp_path / "support.stl"
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    data = np.zeros((2, 2, 2), dtype=bool)
+    data[0, 1, 1] = True
+    grid = VoxelGrid(data, spacing=0.25, origin=(1.0, 2.0, 3.0), support_mask=data)
+    _write_generated_support_grid_cache(support, grid, "X surface support")
+    config = type(
+        "ConfigProbe",
+        (),
+        {"support_geometry_path": support, "voxel_spacing": 0.25},
+    )()
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._last_generated_support_path = None
+    view._last_generated_support_grid = None
+    view._last_generated_support_type = None
+
+    loaded = view._cached_generated_support_grid_for_config(config)
+
+    assert loaded is not None
+    assert loaded.filled_count == 1
+    assert loaded.origin == (1.0, 2.0, 3.0)
+    assert view._last_generated_support_type == "X surface support"
+
+
+def test_generated_support_cache_round_trips_type_and_grid(tmp_path):
+    support = tmp_path / "support.stl"
+    data = np.ones((1, 2, 1), dtype=bool)
+    grid = VoxelGrid(data, spacing=0.5, origin=(0.5, 0.0, -1.0), support_mask=data)
+
+    _write_generated_support_grid_cache(support, grid, "Column support")
+    loaded, support_type = _load_generated_support_grid_cache(support)
+
+    assert support_type == "Column support"
+    assert loaded is not None
+    assert np.array_equal(loaded.data, data)
+    assert loaded.origin == (0.5, 0.0, -1.0)
+
+
+def test_support_overlay_downsampling_preserves_thin_features():
+    pane = PreviewPane.__new__(PreviewPane)
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    mask[1, 1, 1] = True
+
+    prepared = pane._prepare_support_overlay_data(mask, stride=2, shape=(2, 2, 2))
+
+    assert prepared is not None
+    assert prepared[0, 0, 0]
 
 
 def test_overhang_limit_control_is_hidden_until_overhang_mode():

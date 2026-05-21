@@ -7,6 +7,7 @@ from capp.geometry.voxelizer import (
     union_voxel_grids,
     voxelize_mesh,
     voxelize_part_and_support,
+    voxelize_part_with_support_grid,
     voxelize_surface_shell,
 )
 from capp.io.exports import write_binary_stl, write_surface_stl
@@ -96,6 +97,28 @@ def test_line_support_voxelization_accepts_open_surface(tmp_path):
 
     assert grid.filled_count > 0
     assert grid.shape[0] >= 4
+
+
+def test_line_support_voxelization_handles_thin_vertical_surface(tmp_path):
+    path = tmp_path / "thin_vertical_support.stl"
+    mesh = trimesh.Trimesh(
+        vertices=[
+            (0.0, 0.0, 0.0),
+            (0.05, 0.0, 0.0),
+            (0.05, 0.0, 5.0),
+            (0.0, 0.0, 5.0),
+        ],
+        faces=[(0, 1, 2), (0, 2, 3)],
+        process=False,
+    )
+    mesh.export(path)
+
+    grid = voxelize_surface_shell(path, spacing=0.2)
+    occupied = np.argwhere(grid.data)
+
+    assert grid.filled_count > 20
+    assert np.unique(occupied[:, 1]).size == 1
+    assert np.ptp(occupied[:, 2]) >= 20
 
 
 def test_overhang_support_generation_extrudes_to_build_plate(tmp_path):
@@ -221,6 +244,27 @@ def test_part_and_generated_support_voxelization_unions_inputs(tmp_path):
     assert combined.origin[2] <= 0.0
 
 
+def test_cached_generated_support_grid_can_be_combined_without_rasterizing_stl(tmp_path):
+    part_path = _box_stl(tmp_path, "cached_support_part", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
+    part = voxelize_mesh(part_path, spacing=1.0)
+    support = generate_overhang_support_grid(
+        part_path,
+        part,
+        SupportGenerationParameters(
+            support_type="X surface support",
+            overhang_angle=60.0,
+            pitch=2.0,
+            thickness=1.0,
+            build_plate_z=0.0,
+        ),
+    )
+
+    combined = voxelize_part_with_support_grid(part_path, support, spacing=1.0)
+
+    assert combined.filled_count > part.filled_count
+    assert combined.support_mask.sum() > 0
+
+
 def test_part_and_support_without_generation_request_keeps_part_only(tmp_path):
     part_path = _box_stl(tmp_path, "part_only_when_not_generated", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
     part = voxelize_mesh(part_path, spacing=1.0)
@@ -289,7 +333,71 @@ def test_footprint_offset_does_not_leave_floating_support_segments(tmp_path):
         int(np.where(support.data[x_index, y_index, :])[0].min())
         for x_index, y_index in occupied_xy
     ]
-    assert set(column_bottoms) == {min(column_bottoms)}
+    base_z = min(column_bottoms)
+    for (x_index, y_index), bottom_z in zip(occupied_xy, column_bottoms):
+        assert bottom_z == base_z or part.data[x_index, y_index, bottom_z - 1]
+
+
+def test_overhang_support_can_anchor_to_lower_part_surface(tmp_path):
+    lower_plate = trimesh.creation.box(extents=(4.0, 4.0, 0.5))
+    lower_plate.apply_translation((0.0, 0.0, 0.25))
+    upper_plate = trimesh.creation.box(extents=(6.0, 6.0, 0.5))
+    upper_plate.apply_translation((0.0, 0.0, 3.25))
+    part_path = tmp_path / "part_anchored_support.stl"
+    trimesh.util.concatenate([lower_plate, upper_plate]).export(part_path)
+    part = voxelize_mesh(part_path, spacing=0.5)
+
+    support = generate_overhang_support_grid(
+        part_path,
+        part,
+        SupportGenerationParameters(
+            support_type="Volume support",
+            overhang_angle=60.0,
+            footprint_offset=0.0,
+            build_plate_z=0.0,
+        ),
+    )
+
+    occupied_xy = np.argwhere(support.data.any(axis=2))
+    column_bottoms = np.array(
+        [
+            int(np.where(support.data[x_index, y_index, :])[0].min())
+            for x_index, y_index in occupied_xy
+        ],
+        dtype=np.int32,
+    )
+    anchored = occupied_xy[column_bottoms > 0]
+
+    assert anchored.size > 0
+    for (x_index, y_index), bottom_z in zip(anchored, column_bottoms[column_bottoms > 0]):
+        assert part.data[x_index, y_index, bottom_z - 1]
+
+
+def test_auto_build_plate_support_does_not_extend_below_part_bottom(tmp_path):
+    base = trimesh.creation.box(extents=(2.0, 2.0, 1.0))
+    base.apply_translation((0.0, 0.0, 0.7))
+    plate = trimesh.creation.box(extents=(6.0, 6.0, 0.5))
+    plate.apply_translation((0.0, 0.0, 2.2))
+    part_path = tmp_path / "near_bed_overhang.stl"
+    part_mesh = trimesh.util.concatenate([base, plate])
+    part_mesh.export(part_path)
+    part = voxelize_mesh(part_path, spacing=0.5)
+
+    support = generate_overhang_support_grid(
+        part_path,
+        part,
+        SupportGenerationParameters(
+            support_type="Volume support",
+            overhang_angle=60.0,
+            footprint_offset=0.0,
+            build_plate_z=None,
+        ),
+    )
+    occupied = np.argwhere(support.data)
+
+    assert support.filled_count > 0
+    support_min_z = support.origin[2] + int(occupied[:, 2].min()) * support.spacing
+    assert support_min_z >= float(part_mesh.bounds[0, 2]) - 1e-9
 
 
 def test_generated_support_grid_can_be_exported_as_stl(tmp_path):
