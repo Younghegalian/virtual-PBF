@@ -5,7 +5,7 @@
   <img alt="PySide6" src="https://img.shields.io/badge/gui-PySide6-41CD52">
   <img alt="Solver backends" src="https://img.shields.io/badge/backends-CPU%20%7C%20C%2B%2B%20native%20%7C%20CUDA-0F172A">
   <img alt="Tests" src="https://img.shields.io/badge/tests-141%20passing-2EA44F">
-  <img alt="Status" src="https://img.shields.io/badge/status-research%20workbench-4B5563">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-2563EB">
 </p>
 
 Virtual PBF Workbench is a desktop research application for virtual powder bed fusion
@@ -206,11 +206,13 @@ The test suite covers CLI behavior, voxelization, support handling, model calibr
 machine-map generation/application, backend validation, solver parity, and workbench UI
 helpers.
 
+## License
+
+This project is released under the MIT License. See `LICENSE` for the full
+license text.
+
 ## Project Status
 
 This is an active research workbench, not a generic demo. The GUI workflow is built
 around the practical loop of preparing a build, running virtual printing, inspecting
 result geometry, calibrating model parameters, and reusing machine-map presets.
-
-License status follows the package metadata: proprietary research prototype unless a
-separate license file is added.

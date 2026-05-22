@@ -5,10 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "virtual-pbf-workbench"
 version = "0.1.0"
-description = "Desktop virtual PBF simulation, calibration, and machine-map research workbench."
+description = "Desktop workbench for virtual powder bed fusion simulation, support-aware voxelization, model calibration, and machine parameter maps."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary research prototype" }
+license = { text = "MIT" }
 authors = [
   { name = "Virtual PBF contributors" }
 ]
