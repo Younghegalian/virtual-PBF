@@ -1096,6 +1096,13 @@ class WorkbenchMainWindow:
                 border: 1px solid #d1d6de;
                 padding: 3px 4px;
             }
+            QLabel#DeviationSummary {
+                color: #1f2937;
+                background: #ffffff;
+                border: 1px solid #d1d6de;
+                padding: 4px 6px;
+                line-height: 115%;
+            }
             QLabel#SliceView {
                 background: #ffffff;
                 border: 1px solid #aeb7c2;
@@ -1932,6 +1939,7 @@ class WorkbenchMainWindow:
             QLabel,
             QLineEdit,
             QPushButton,
+            QSizePolicy,
             QSlider,
             QSplitter,
             QVBoxLayout,
@@ -2011,15 +2019,18 @@ class WorkbenchMainWindow:
         self._deviation_button = deviation_button
         deviation_form.addRow("", deviation_button)
         self._deviation_summary = QLabel("-")
+        self._deviation_summary.setObjectName("DeviationSummary")
         self._deviation_summary.setWordWrap(True)
+        self._deviation_summary.setMinimumHeight(78)
+        self._deviation_summary.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self._deviation_summary.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.MinimumExpanding,
+        )
         deviation_form.addRow("Summary", self._deviation_summary)
         result_layout.addWidget(deviation_box)
-
-        preview_button = QPushButton("Preview 3D")
-        preview_button.setEnabled(False)
-        preview_button.clicked.connect(self._preview_loaded_result)
-        self._result_display_preview_button = preview_button
-        result_layout.addWidget(preview_button)
 
         self._slice_label = QLabel("-")
         self._slice_label.setObjectName("SliceView")
@@ -3719,16 +3730,33 @@ class WorkbenchMainWindow:
         if hasattr(self, "_deviation_summary"):
             self._deviation_summary.setText("Ready")
 
+    def _format_deviation_summary(
+        self,
+        metrics: dict[str, float],
+        alignment: tuple[float, float, float] | None = None,
+    ) -> str:
+        lines = [
+            f"Mean |d|: {metrics['mean_abs_mm']:.4g} mm",
+            f"P95 |d|: {metrics['p95_abs_mm']:.4g} mm",
+            f"Max |d|: {metrics['max_abs_mm']:.4g} mm",
+            (
+                "Signed: "
+                f"{metrics['min_signed_mm']:.4g} to "
+                f"{metrics['max_signed_mm']:.4g} mm"
+            ),
+            "Scale: -1 to +1 mm",
+        ]
+        if alignment is not None and max(abs(value) for value in alignment) > 1e-9:
+            lines.append(
+                "Aligned: "
+                f"{alignment[0]:.4g}, {alignment[1]:.4g}, {alignment[2]:.4g} mm"
+            )
+        return "\n".join(lines)
+
     def _update_result_action_state(self) -> None:
         enabled = (not getattr(self, "_busy", False)) and self._loaded_result is not None
-        preview_updating = bool(getattr(self, "_result_preview_updating", False))
         if hasattr(self, "_deviation_button"):
             self._deviation_button.setEnabled(enabled)
-        if hasattr(self, "_result_display_preview_button"):
-            self._result_display_preview_button.setEnabled(enabled and not preview_updating)
-            self._result_display_preview_button.setText(
-                "Updating 3D..." if preview_updating else "Preview 3D"
-            )
         if hasattr(self, "_save_result_button"):
             self._save_result_button.setEnabled(enabled)
         if hasattr(self, "_save_voxel_grid_button"):
@@ -3743,10 +3771,6 @@ class WorkbenchMainWindow:
         from PySide6.QtWidgets import QApplication
 
         self._result_preview_updating = bool(updating)
-        if hasattr(self, "_result_display_preview_button"):
-            self._result_display_preview_button.setText(
-                "Updating 3D..." if updating else "Preview 3D"
-            )
         if updating:
             if hasattr(self, "_result_preview"):
                 self._result_preview.show_message("Updating 3D result preview...")
@@ -3945,20 +3969,7 @@ class WorkbenchMainWindow:
 
         metrics = preview.metrics
         alignment = preview.alignment_offset
-        alignment_text = ""
-        if max(abs(value) for value in alignment) > 1e-9:
-            alignment_text = (
-                f"; aligned origin by {alignment[0]:.4g}, "
-                f"{alignment[1]:.4g}, {alignment[2]:.4g} mm"
-            )
-        self._deviation_summary.setText(
-            "mean |d| "
-            f"{metrics['mean_abs_mm']:.4g} mm, p95 {metrics['p95_abs_mm']:.4g} mm, "
-            f"max |d| {metrics['max_abs_mm']:.4g} mm, signed "
-            f"{metrics['min_signed_mm']:.4g} to {metrics['max_signed_mm']:.4g} mm"
-            ", color scale -1/+1 mm"
-            f"{alignment_text}"
-        )
+        self._deviation_summary.setText(self._format_deviation_summary(metrics, alignment))
         self._append_log(
             "Geometry deviation ready: "
             f"mean |d|={metrics['mean_abs_mm']:.4g} mm, "

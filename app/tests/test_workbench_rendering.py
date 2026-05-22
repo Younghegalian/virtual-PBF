@@ -272,20 +272,17 @@ def test_geometry_deviation_button_updates_after_result_sync(tmp_path):
     view._busy = False
     view._loaded_result = {"source_geometry": source_geometry}
     view._deviation_button = _ButtonProbe()
-    view._result_display_preview_button = _ButtonProbe()
     view._deviation_stl_path = _LineEditProbe()
 
     view._sync_deviation_stl_from_result()
 
     assert view._deviation_stl_path.text == str(source_geometry)
     assert view._deviation_button.enabled is True
-    assert view._result_display_preview_button.enabled is True
 
     view._busy = True
     view._update_result_action_state()
 
     assert view._deviation_button.enabled is False
-    assert view._result_display_preview_button.enabled is False
 
 
 def test_loaded_result_change_advances_deviation_revision():
@@ -297,6 +294,27 @@ def test_loaded_result_change_advances_deviation_revision():
 
     assert view._result_revision == 5
     assert view._deviation_summary.text == "Ready"
+
+
+def test_geometry_deviation_summary_uses_compact_metric_lines():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    metrics = {
+        "mean_abs_mm": 0.4223,
+        "p95_abs_mm": 1.943,
+        "max_abs_mm": 5.732,
+        "min_signed_mm": -5.732,
+        "max_signed_mm": 0.7557,
+    }
+
+    text = view._format_deviation_summary(metrics)
+
+    assert text.splitlines() == [
+        "Mean |d|: 0.4223 mm",
+        "P95 |d|: 1.943 mm",
+        "Max |d|: 5.732 mm",
+        "Signed: -5.732 to 0.7557 mm",
+        "Scale: -1 to +1 mm",
+    ]
 
 
 def test_selected_result_volume_can_hide_support_mask():
@@ -434,7 +452,6 @@ def test_refresh_result_views_updates_3d_preview_automatically():
     view._result_revision = 1
     view._result_volume_choice = _ComboProbe("Binary")
     view._result_hide_support = _CheckProbe(checked=True)
-    view._result_display_preview_button = _ButtonProbe()
     view._slice_axis = _ComboProbe("Z")
     view._slice_slider = _SliderProbe()
     view._result_preview = _PreviewProbe()
