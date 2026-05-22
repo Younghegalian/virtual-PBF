@@ -3,8 +3,11 @@
 Desktop workbench for virtual PBF simulation, ROI model calibration, and build-plate
 machine parameter maps.
 
-The app is a Python/PySide6 rebuild. MATLAB-era files are reference inputs only; the
-runtime path is Python package code under `src/capp`.
+The app is a Python/PySide6 desktop workflow for support-aware voxelization, empirical
+layer-wise probability simulation, result inspection, model calibration, and machine-map
+preset generation. It is not a physics-based FEM, thermal, melt-pool, fluid-flow, or
+residual-stress solver; the simulation output is a calibrated stochastic voxel field and
+sampled binary geometry.
 
 ## What Works Now
 
@@ -22,14 +25,13 @@ runtime path is Python package code under `src/capp`.
 - Render a geometry deviation heatmap by comparing an original STL against the result
   iso-surface extracted from a virtual printing volume.
 
-## Important Limitation
+## Simulation Model
 
-Machine preset library management is implemented, but applying a saved machine map as a
-spatial solver bias is not complete yet. The simulation pipeline keeps the hook in place, but
-`apply_machine_parameter_map` currently returns the incoming solver parameters unchanged and
-the solvers still reject `MachineBiasMode.PRESET`. Treat saved machine maps as generated
-artifacts ready for inspection and future solver integration, not as fully active simulation
-bias input yet.
+The solver updates a voxel probability field layer by layer. Directional neighbor
+coefficients control in-plane propagation, a lower-layer coefficient carries probability
+upward through the build, `IDP` adjusts part voxels, and stochastic sampling converts the
+probability field into a binary result. Machine-map presets can provide spatially varying
+coefficient grids for the build plate.
 
 ## Layout
 

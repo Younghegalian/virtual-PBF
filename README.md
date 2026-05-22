@@ -8,14 +8,18 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-2563EB">
 </p>
 
-Virtual PBF Workbench is a desktop research application for virtual powder bed fusion
-simulation. It brings build setup, support generation, voxelization, solver execution,
-result inspection, model calibration, and machine-map workflows into one PySide6
-Workbench.
+Virtual PBF Workbench is a desktop research application for fast, geometry-centered
+virtual powder bed fusion studies. It is built for the practical loop of preparing a
+build, generating or importing supports, voxelizing the setup, running an empirical
+virtual printing model, inspecting the resulting volume, and calibrating model
+parameters against reference regions of interest.
 
-The project replaces the old MATLAB-era prototype path with a Python application,
-tested solver code, reusable preset libraries, and a GUI workflow that is meant to be
-used repeatedly during simulation and calibration work.
+This is not a physics-based finite-element, thermal, melt-pool, fluid-flow, or residual
+stress solver. It does not solve heat-transfer, phase-change, mechanics, or CFD
+equations, and it does not require material properties, laser scan paths, beam profiles,
+or transient temperature fields. Instead, it uses a calibrated stochastic voxel model:
+local neighbor probabilities are propagated layer by layer through a build volume, then
+sampled into a binary result that can be compared against geometry or calibration masks.
 
 <p align="center">
   <img src="docs/images/readme-build-setup.png" alt="Build setup with generated support and overhang visualization">
@@ -39,6 +43,39 @@ used repeatedly during simulation and calibration work.
   signed color scale.
 - Runs ROI-based model calibration and saves reusable machine-map artifacts by preset
   name.
+
+## Mathematical Model
+
+The simulation core treats the voxelized build as a discrete 3D lattice. Each occupied
+voxel carries a build probability, and each layer is updated from already-computed
+neighbors rather than from continuum physics. The default update is a directional
+Von Neumann neighborhood: four in-plane neighbors plus the lower-layer voxel below the
+current cell.
+
+At each layer, the solver iterates until the configured residual criteria or iteration
+limit is reached. In simplified form, each voxel update combines:
+
+- directional neighbor coefficients for `-X`, `+X`, `-Y`, and `+Y` growth tendency;
+- a lower-layer coefficient for vertical propagation;
+- a minimum bias term that can seed low-probability growth;
+- an initial deviation parameter, `IDP`, which adjusts part voxels while being
+  suppressed on support-only regions;
+- stochastic sampling, either per layer or over the full volume, to produce the final
+  binary geometry.
+
+The model is therefore best understood as an empirical probabilistic morphology model.
+It estimates how a voxelized target geometry may remain, disappear, or deviate under a
+chosen parameter set. The coefficients are calibrated from observed geometry or ROI
+masks, and machine maps can make those coefficients spatially varying across the build
+plate.
+
+### What It Is Not
+
+Virtual PBF Workbench should not be interpreted as a direct physical simulation of the
+PBF process. It does not predict temperature, melt-pool shape, fluid flow, thermal
+stress, microstructure, powder spreading, or laser-material interaction. Its output is a
+probability field, a sampled binary volume, geometric deviation metrics, and calibrated
+parameter maps for fast comparative studies.
 
 ## Workbench Flow
 
@@ -107,7 +144,7 @@ virtual PBF/
     geometry_examples/      STL fixtures and calibration artifact geometry
     calibration_samples/    ROI target masks for Model Calibration
     machine_map/            SP coordinate workbook and portable CSV
-    legacy_models/          MATLAB-era model artifacts kept for reference
+    legacy_models/          Historical machine-model artifacts kept for reference
 ```
 
 ## Quick Start
@@ -173,7 +210,7 @@ ignored by git.
 
 ## Data Inputs
 
-The repository includes portable, non-MATLAB data needed for the current workflow:
+The repository includes portable data needed for the current workflow:
 
 ```text
 data/geometry_examples/
@@ -183,8 +220,7 @@ data/machine_map/sp_coordinates.csv
 data/legacy_models/
 ```
 
-See `DATA_MANIFEST.md` for a concise list of included data and intentionally omitted
-legacy MATLAB sources.
+See `DATA_MANIFEST.md` for a concise list of included data.
 
 ## Development
 
