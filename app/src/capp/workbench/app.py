@@ -862,6 +862,7 @@ class WorkbenchMainWindow:
         style = self._window.style()
         self._icons = {
             "home": style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon),
+            "build": style.standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon),
             "simulation": style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
             "calibration": style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton),
             "results": style.standardIcon(QStyle.StandardPixmap.SP_FileIcon),
@@ -925,7 +926,8 @@ class WorkbenchMainWindow:
 
         self._stack = QStackedWidget()
         self._stack.setObjectName("FeatureStack")
-        self._add_feature("simulation", "Virtual Printing", self._build_simulation_page())
+        self._add_feature("build", "Build Setup", self._build_build_setup_page())
+        self._add_feature("simulation", "Virtual Printing", self._build_virtual_printing_page())
         self._add_feature("results", "Result Display", self._build_results_page())
         self._add_feature("calibration", "Model Calibration", self._build_lab_page())
         self._add_feature("settings", "Preferences", self._build_preferences_page())
@@ -1144,24 +1146,6 @@ class WorkbenchMainWindow:
                 background: #edf0f3;
                 border-color: #d1d6de;
             }
-            QToolButton#SupportOptionsToggle {
-                min-height: 19px;
-                min-width: 0;
-                background: #f6f8fb;
-                border: 1px solid #aeb7c2;
-                border-radius: 1px;
-                padding: 0 7px;
-                text-align: left;
-            }
-            QToolButton#SupportOptionsToggle:hover {
-                background: #e9f1fb;
-                border-color: #6b93c4;
-            }
-            QToolButton#SupportOptionsToggle:disabled {
-                color: #9aa3ad;
-                background: #edf0f3;
-                border-color: #d1d6de;
-            }
             QPlainTextEdit#DetailsText {
                 background: #ffffff;
                 background-color: #ffffff;
@@ -1343,15 +1327,7 @@ class WorkbenchMainWindow:
                 background: #d8e0ea;
                 border-color: #728197;
             }
-            QToolButton#SupportOptionsToggle {
-                background: #d8e0ea;
-                border-color: #728197;
-            }
             QPushButton:hover {
-                background: #c8d7e8;
-                border-color: #4c6b91;
-            }
-            QToolButton#SupportOptionsToggle:hover {
                 background: #c8d7e8;
                 border-color: #4c6b91;
             }
@@ -1422,15 +1398,7 @@ class WorkbenchMainWindow:
                 background: #ffffff;
                 border-color: #b8c7d8;
             }
-            QToolButton#SupportOptionsToggle {
-                background: #ffffff;
-                border-color: #b8c7d8;
-            }
             QPushButton:hover {
-                background: #f0f8ff;
-                border-color: #6ba7d8;
-            }
-            QToolButton#SupportOptionsToggle:hover {
                 background: #f0f8ff;
                 border-color: #6ba7d8;
             }
@@ -1487,10 +1455,11 @@ class WorkbenchMainWindow:
         grid.setVerticalSpacing(12)
 
         entries = [
-            ("simulation", "Virtual Printing", 0),
-            ("results", "Result Display", 1),
-            ("calibration", "Model Calibration", 2),
-            ("settings", "Preferences", 3),
+            ("build", "Build Setup", 0),
+            ("simulation", "Virtual Printing", 1),
+            ("results", "Result Display", 2),
+            ("calibration", "Model Calibration", 3),
+            ("settings", "Preferences", 4),
         ]
         for position, (icon_key, label, page_index) in enumerate(entries):
             button = QPushButton(label)
@@ -1503,7 +1472,7 @@ class WorkbenchMainWindow:
         layout.addStretch(1)
         return panel
 
-    def _build_simulation_page(self):
+    def _build_build_setup_page(self):
         from PySide6.QtWidgets import (
             QComboBox,
             QDoubleSpinBox,
@@ -1515,7 +1484,6 @@ class WorkbenchMainWindow:
             QPushButton,
             QScrollArea,
             QSplitter,
-            QToolButton,
             QVBoxLayout,
             QWidget,
         )
@@ -1533,7 +1501,7 @@ class WorkbenchMainWindow:
         left_shell_layout = QVBoxLayout(left_shell)
         left_shell_layout.setContentsMargins(0, 0, 0, 0)
         left_shell_layout.setSpacing(0)
-        left_shell_layout.addWidget(self._page_title("Virtual Printing"))
+        left_shell_layout.addWidget(self._page_title("Build Setup"))
 
         left_content = QWidget()
         left_content.setObjectName("ParameterContent")
@@ -1545,10 +1513,6 @@ class WorkbenchMainWindow:
         geometry_box = QGroupBox("Geometry In")
         geometry_form = QFormLayout(geometry_box)
         self._configure_form(geometry_form)
-        self._part_type = QComboBox()
-        self._part_type.addItems(["Part only", "Part & Support"])
-        self._part_type.currentTextChanged.connect(self._on_part_type_changed)
-        geometry_form.addRow("Part type", self._part_type)
 
         self._part_geometry = QLineEdit()
         self._part_geometry.textChanged.connect(self._generated_support_dependency_changed)
@@ -1610,17 +1574,7 @@ class WorkbenchMainWindow:
         orientation_layout.addLayout(orientation_action_row)
         geometry_form.addRow("Orientation", orientation_widget)
 
-        self._support_options_toggle = QToolButton()
-        self._support_options_toggle.setObjectName("SupportOptionsToggle")
-        self._support_options_toggle.setCheckable(True)
-        self._support_options_toggle.setChecked(False)
-        self._support_options_toggle.setToolButtonStyle(
-            self._Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self._support_options_toggle.clicked.connect(self._toggle_support_options)
-        geometry_form.addRow("Support setup", self._support_options_toggle)
-
-        self._support_options_panel = QWidget()
+        self._support_options_panel = QGroupBox("Support Setup")
         self._support_options_panel.setObjectName("SupportOptionsPanel")
         support_form = QFormLayout(self._support_options_panel)
         self._configure_form(support_form)
@@ -1639,7 +1593,8 @@ class WorkbenchMainWindow:
 
         self._support_type = QComboBox()
         self._support_type.currentTextChanged.connect(self._on_support_type_changed)
-        support_form.addRow("Support type", self._support_type)
+        self._support_type_label = QLabel("Support type")
+        support_form.addRow(self._support_type_label, self._support_type)
 
         self._support_overhang_angle = QLineEdit("60")
         self._support_pitch = QLineEdit("2.0")
@@ -1684,7 +1639,6 @@ class WorkbenchMainWindow:
         support_action_row.addWidget(save_support)
         support_form.addRow("", support_action_row)
         self._refresh_support_type_options()
-        geometry_form.addRow("", self._support_options_panel)
 
         self._grid_spacing = QLineEdit("0.5")
         self._grid_spacing.textChanged.connect(self._invalidate_voxelization)
@@ -1696,9 +1650,109 @@ class WorkbenchMainWindow:
         spacing_row.setSpacing(4)
         spacing_row.addWidget(self._grid_spacing)
         spacing_row.addWidget(estimate)
-        geometry_form.addRow("Grid spacing (mm)", spacing_row)
+
+        voxel_box = QGroupBox("Voxelization")
+        voxel_form = QFormLayout(voxel_box)
+        self._configure_form(voxel_form)
+        voxel_form.addRow("Grid spacing (mm)", spacing_row)
 
         left_layout.addWidget(geometry_box)
+        left_layout.addWidget(self._support_options_panel)
+        left_layout.addWidget(voxel_box)
+        left_layout.addStretch(1)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(4, 4, 4, 4)
+        action_row.setSpacing(4)
+        voxelize = QPushButton("Voxelize Geometry")
+        self._voxelize_button = voxelize
+        voxelize.clicked.connect(self._voxelize_geometry)
+        action_row.addWidget(voxelize)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("ParameterScroll")
+        scroll.viewport().setObjectName("ParameterViewport")
+        scroll.setWidgetResizable(True)
+        scroll.setAlignment(self._Qt.AlignmentFlag.AlignTop)
+        scroll.setHorizontalScrollBarPolicy(self._Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(left_content)
+        left_shell_layout.addWidget(scroll, 1)
+        left_shell_layout.addLayout(action_row)
+
+        right = QWidget()
+        right.setObjectName("ViewerPane")
+        right.setMinimumWidth(640)
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(3, 3, 3, 3)
+        right_layout.setSpacing(3)
+        from capp.workbench.preview import PreviewPane
+
+        self._preview = PreviewPane(show_source_selector=True, show_stl_controls=True)
+        self._preview.source_selector.currentTextChanged.connect(self._preview_source_changed)
+        self._preview.stl_display_mode.currentTextChanged.connect(self._refresh_stl_preview_style)
+        self._preview.overhang_limit.editingFinished.connect(self._refresh_stl_preview_style)
+        right_layout.addWidget(self._preview.widget, 1)
+
+        summary_box = QGroupBox("Build Summary")
+        summary = QFormLayout(summary_box)
+        self._configure_form(summary)
+        self._shape_label = QLabel("-")
+        self._spacing_label = QLabel("-")
+        self._voxel_status_label = QLabel("Required")
+        summary.addRow("Shape", self._shape_label)
+        summary.addRow("Spacing", self._spacing_label)
+        summary.addRow("Voxel Grid", self._voxel_status_label)
+        right_layout.addWidget(summary_box)
+
+        splitter = QSplitter(self._Qt.Orientation.Horizontal)
+        splitter.addWidget(left_shell)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 5)
+        splitter.setSizes([540, 1210])
+        outer.addWidget(splitter)
+
+        self._update_support_controls()
+        self._update_preview_source_controls("STL")
+        self._update_preview_source_availability()
+        return panel
+
+    def _build_virtual_printing_page(self):
+        from PySide6.QtWidgets import (
+            QComboBox,
+            QFormLayout,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPushButton,
+            QScrollArea,
+            QSplitter,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        panel = QWidget()
+        panel.setObjectName("Page")
+        outer = QHBoxLayout(panel)
+        outer.setContentsMargins(3, 3, 3, 3)
+        outer.setSpacing(3)
+
+        left_shell = QWidget()
+        left_shell.setObjectName("ParameterPane")
+        left_shell.setMinimumWidth(500)
+        left_shell.setMaximumWidth(650)
+        left_shell_layout = QVBoxLayout(left_shell)
+        left_shell_layout.setContentsMargins(0, 0, 0, 0)
+        left_shell_layout.setSpacing(0)
+        left_shell_layout.addWidget(self._page_title("Virtual Printing"))
+
+        left_content = QWidget()
+        left_content.setObjectName("ParameterContent")
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.setSpacing(4)
+        left_layout.setAlignment(self._Qt.AlignmentFlag.AlignTop)
 
         computation_box = QGroupBox("Computation Preset")
         computation_form = QFormLayout(computation_box)
@@ -1717,7 +1771,6 @@ class WorkbenchMainWindow:
         self._coeff_lower = QLineEdit("1")
         self._coeff_moore_l = QLineEdit("0.125")
         self._coeff_moore_cl = QLineEdit("1")
-
         computation_form.addRow("-x Neumann", self._coeff_x_neg)
         computation_form.addRow("+x Neumann", self._coeff_x_pos)
         computation_form.addRow("-y Neumann", self._coeff_y_neg)
@@ -1811,6 +1864,27 @@ class WorkbenchMainWindow:
         process_form.addRow("Map bounds (mm)", map_bounds_row)
         self._update_machine_map_coordinate_fields()
         self._machine_map_path.editingFinished.connect(self._machine_map_path_edited)
+
+        self._processor = QComboBox()
+        self._processor.currentIndexChanged.connect(self._update_backend_status_label)
+        self._processor_status = QLabel()
+        self._processor_status.setWordWrap(False)
+        self._processor_status.setObjectName("BackendStatus")
+        refresh_devices = QPushButton("Validate")
+        refresh_devices.clicked.connect(lambda: self._refresh_compute_backends(log=True))
+        processor_row = QHBoxLayout()
+        processor_row.setContentsMargins(0, 0, 0, 0)
+        processor_row.setSpacing(4)
+        processor_row.addWidget(self._processor, 1)
+        processor_row.addWidget(refresh_devices)
+        process_form.addRow("Processor", processor_row)
+        process_form.addRow("Device status", self._processor_status)
+
+        self._output_dir = QLineEdit("examples/outputs/gui_simulation")
+        process_form.addRow("Output dir", self._file_row(self._output_dir, self._browse_output_dir))
+        left_layout.addWidget(process_box)
+        left_layout.addStretch(1)
+
         self._machine_preset_locked_widgets = [
             self._grid_spacing,
             self._estimate_spacing_button,
@@ -1831,39 +1905,15 @@ class WorkbenchMainWindow:
             self._idp,
             self._stochastic_mode,
         ]
+        self._set_parameter_defaults(self._neighborhood.currentText())
         self._refresh_machine_preset_list(select_path=self._default_machine_map_path())
         self._refresh_machine_map_name()
         self._update_machine_preset_controls()
-
-        self._processor = QComboBox()
-        self._processor.currentIndexChanged.connect(self._update_backend_status_label)
-        self._processor_status = QLabel()
-        self._processor_status.setWordWrap(False)
-        self._processor_status.setObjectName("BackendStatus")
-        refresh_devices = QPushButton("Validate")
-        refresh_devices.clicked.connect(lambda: self._refresh_compute_backends(log=True))
-        processor_row = QHBoxLayout()
-        processor_row.setContentsMargins(0, 0, 0, 0)
-        processor_row.setSpacing(4)
-        processor_row.addWidget(self._processor, 1)
-        processor_row.addWidget(refresh_devices)
-        process_form.addRow("Processor", processor_row)
-        process_form.addRow("Device status", self._processor_status)
         self._refresh_compute_backends(log=False)
-
-        self._output_dir = QLineEdit("examples/outputs/gui_simulation")
-        process_form.addRow("Output dir", self._file_row(self._output_dir, self._browse_output_dir))
-        left_layout.addWidget(process_box)
-        left_layout.addStretch(1)
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(4, 4, 4, 4)
         action_row.setSpacing(4)
-        voxelize = QPushButton("Voxelize Geometry")
-        self._voxelize_button = voxelize
-        voxelize.clicked.connect(self._voxelize_geometry)
-        action_row.addWidget(voxelize)
-
         self._run_button = QPushButton("Run Virtual Printing")
         self._run_button.setObjectName("PrimaryButton")
         self._run_button.setIcon(self._icons["simulation"])
@@ -1883,49 +1933,52 @@ class WorkbenchMainWindow:
 
         right = QWidget()
         right.setObjectName("ViewerPane")
-        right.setMinimumWidth(640)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(3, 3, 3, 3)
         right_layout.setSpacing(3)
-        from capp.workbench.preview import PreviewPane
 
-        self._preview = PreviewPane(show_source_selector=True, show_stl_controls=True)
-        self._preview.source_selector.currentTextChanged.connect(self._preview_source_changed)
-        self._preview.stl_display_mode.currentTextChanged.connect(self._refresh_stl_preview_style)
-        self._preview.overhang_limit.editingFinished.connect(self._refresh_stl_preview_style)
-        right_layout.addWidget(self._preview.widget, 1)
+        build_box = QGroupBox("Build Setup")
+        build_box.setMinimumHeight(118)
+        build_form = QFormLayout(build_box)
+        self._configure_form(build_form)
+        self._print_build_label = QLabel("Voxelization required")
+        self._print_build_grid_label = QLabel("-")
+        self._print_build_spacing_label = QLabel("-")
+        self._print_build_support_label = QLabel("-")
+        for label in (
+            self._print_build_label,
+            self._print_build_grid_label,
+            self._print_build_spacing_label,
+            self._print_build_support_label,
+        ):
+            label.setWordWrap(False)
+        build_form.addRow("Status", self._print_build_label)
+        build_form.addRow("Grid", self._print_build_grid_label)
+        build_form.addRow("Spacing", self._print_build_spacing_label)
+        build_form.addRow("Support", self._print_build_support_label)
+        right_layout.addWidget(build_box)
 
         summary_box = QGroupBox("Run Summary")
         summary = QFormLayout(summary_box)
         self._configure_form(summary)
-        self._shape_label = QLabel("-")
-        self._spacing_label = QLabel("-")
         self._rest_label = QLabel("-")
         self._density_label = QLabel("-")
         self._outside_label = QLabel("-")
         self._elapsed_label = QLabel("-")
-        self._voxel_status_label = QLabel("Required")
-        summary.addRow("Shape", self._shape_label)
-        summary.addRow("Spacing", self._spacing_label)
-        summary.addRow("Voxel Grid", self._voxel_status_label)
         summary.addRow("Rest Volume", self._rest_label)
         summary.addRow("Probability Density", self._density_label)
         summary.addRow("Out-of-CAD Voxels", self._outside_label)
         summary.addRow("Elapsed", self._elapsed_label)
         right_layout.addWidget(summary_box)
+        right_layout.addStretch(1)
 
         splitter = QSplitter(self._Qt.Orientation.Horizontal)
         splitter.addWidget(left_shell)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 5)
-        splitter.setSizes([540, 1210])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([740, 680])
         outer.addWidget(splitter)
-
-        self._on_part_type_changed(self._part_type.currentText())
-        self._set_parameter_defaults(self._neighborhood.currentText())
-        self._update_preview_source_controls("STL")
-        self._update_preview_source_availability()
         return panel
 
     def _build_results_page(self):
@@ -3540,7 +3593,15 @@ class WorkbenchMainWindow:
             f"Voxelizing selected geometry: {config.geometry_path} at {config.voxel_spacing:g} mm"
         )
         self._set_busy(True, "Voxelizing geometry...", task="voxelization")
-        generated_support_grid = self._cached_generated_support_grid_for_config(config)
+        support_requested = (
+            getattr(config, "support_generation", None) is not None
+            or getattr(config, "support_geometry_path", None) is not None
+        )
+        generated_support_grid = (
+            self._cached_generated_support_grid_for_config(config)
+            if support_requested
+            else None
+        )
         if generated_support_grid is not None:
             self._append_log(
                 "Using cached generated support grid for voxelization: "
@@ -3561,6 +3622,30 @@ class WorkbenchMainWindow:
         self._voxelization_worker = worker
         self._thread_pool.start(worker)
 
+    def _set_print_build_required(self) -> None:
+        if not hasattr(self, "_print_build_label"):
+            return
+        self._print_build_label.setText("Voxelization required")
+        for label_name in (
+            "_print_build_grid_label",
+            "_print_build_spacing_label",
+            "_print_build_support_label",
+        ):
+            if hasattr(self, label_name):
+                getattr(self, label_name).setText("-")
+
+    def _set_print_build_ready(self, grid, support_voxels: int) -> None:
+        if not hasattr(self, "_print_build_label"):
+            return
+        self._print_build_label.setText("Ready")
+        if hasattr(self, "_print_build_grid_label"):
+            self._print_build_grid_label.setText(" x ".join(str(v) for v in grid.shape))
+        if hasattr(self, "_print_build_spacing_label"):
+            self._print_build_spacing_label.setText(f"{grid.spacing:g} mm")
+        if hasattr(self, "_print_build_support_label"):
+            support_text = "None" if support_voxels <= 0 else f"{support_voxels:,} voxels"
+            self._print_build_support_label.setText(support_text)
+
     def _voxelization_finished(self, config, grid, display_data) -> None:
         self._voxelization_worker = None
         try:
@@ -3574,6 +3659,7 @@ class WorkbenchMainWindow:
             self._last_voxel_signature = None
             self._last_voxel_support_path = None
             self._voxel_status_label.setText("Required")
+            self._set_print_build_required()
             self._set_busy(False, "Voxelization discarded")
             self._update_preview_source_availability()
             self._append_log(
@@ -3592,9 +3678,10 @@ class WorkbenchMainWindow:
         )
         self._shape_label.setText(" x ".join(str(v) for v in grid.shape))
         self._spacing_label.setText(f"{grid.spacing:g}")
+        support_voxels = int(grid.support_mask.sum())
+        self._set_print_build_ready(grid, support_voxels)
         self._run_button.setEnabled(True)
         self._set_busy(False, "Voxelization complete")
-        support_voxels = int(grid.support_mask.sum())
         self._append_log(
             f"Voxel grid ready: shape={grid.shape}, filled={grid.filled_count}, "
             f"support={support_voxels}"
@@ -3618,6 +3705,7 @@ class WorkbenchMainWindow:
         self._last_voxel_signature = None
         self._last_voxel_support_path = None
         self._voxel_status_label.setText("Required")
+        self._set_print_build_required()
         self._set_busy(False, "Voxelization failed")
         self._update_preview_source_availability()
         self._append_log(f"Voxelization failed: {message}")
@@ -4263,18 +4351,14 @@ class WorkbenchMainWindow:
         )
         return path
 
-    def _on_part_type_changed(self, value: str) -> None:
-        self._update_support_controls(value)
-        self._invalidate_voxelization()
-
     def _on_support_source_changed(self, *_args) -> None:
         self._generated_support_dependency_changed()
         self._refresh_support_type_options()
-        self._update_support_controls(self._part_type.currentText())
+        self._update_support_controls()
 
     def _on_support_type_changed(self, *_args) -> None:
         self._generated_support_dependency_changed()
-        self._update_support_controls(self._part_type.currentText())
+        self._update_support_controls()
 
     def _generated_support_dependency_changed(self, *_args) -> None:
         self._last_generated_support_dirty = True
@@ -4293,6 +4377,13 @@ class WorkbenchMainWindow:
             if source == "Generate from overhang"
             else ["Volume support", "Line support"]
         )
+        if hasattr(self, "_support_type_label"):
+            label = (
+                "Generated support type"
+                if source == "Generate from overhang"
+                else "External support mode"
+            )
+            self._support_type_label.setText(label)
         current = self._support_type.currentText()
         self._support_type.blockSignals(True)
         self._support_type.clear()
@@ -4300,26 +4391,16 @@ class WorkbenchMainWindow:
         self._support_type.setCurrentText(current if current in options else options[0])
         self._support_type.blockSignals(False)
 
-    def _toggle_support_options(self, checked: bool) -> None:
-        self._update_support_controls(self._part_type.currentText(), expanded=checked)
-
-    def _update_support_controls(
-        self, value: str | None = None, expanded: bool | None = None
-    ) -> None:
-        part_type = value if value is not None else self._part_type.currentText()
-        support_enabled = part_type == "Part & Support"
-        if expanded is None:
-            expanded = bool(self._support_options_toggle.isChecked())
-        panel_visible = support_enabled and bool(expanded)
+    def _update_support_controls(self, _value=None) -> None:
+        support_enabled = True
         source = (
             self._support_source.currentText()
             if hasattr(self, "_support_source")
             else "External STL"
         )
-        generated_enabled = support_enabled and source == "Generate from overhang"
-        external_enabled = support_enabled and source == "External STL"
+        generated_enabled = source == "Generate from overhang"
+        external_enabled = source == "External STL"
 
-        self._support_options_toggle.setEnabled(support_enabled)
         if hasattr(self, "_support_source"):
             self._support_source.setEnabled(support_enabled)
         self._support_geometry.setEnabled(external_enabled)
@@ -4348,17 +4429,7 @@ class WorkbenchMainWindow:
                 and not self._busy
                 and self._last_generated_support_grid is not None
             )
-        self._support_options_panel.setVisible(panel_visible)
-
-        text = "Hide support options" if panel_visible else "Show support options"
-        self._support_options_toggle.setText(text)
-        if hasattr(self._support_options_toggle, "setArrowType"):
-            arrow = (
-                self._Qt.ArrowType.DownArrow
-                if panel_visible
-                else self._Qt.ArrowType.RightArrow
-            )
-            self._support_options_toggle.setArrowType(arrow)
+        self._support_options_panel.setVisible(True)
 
     def _support_generation_from_form(self):
         from capp.domain import SupportGenerationParameters
@@ -4446,8 +4517,6 @@ class WorkbenchMainWindow:
         )
 
     def _current_generated_support_signature_and_options(self):
-        if self._part_type.currentText() != "Part & Support":
-            return None
         if self._support_source.currentText() != "Generate from overhang":
             return None
         try:
@@ -4459,8 +4528,6 @@ class WorkbenchMainWindow:
         return signature, options
 
     def _active_generated_support_options(self):
-        if self._part_type.currentText() != "Part & Support":
-            return None
         if self._support_source.currentText() != "Generate from overhang":
             return None
         if getattr(self, "_last_generated_support_dirty", False):
@@ -4491,8 +4558,6 @@ class WorkbenchMainWindow:
         return Path(support_path), options
 
     def _generated_support_path_and_voxel_type(self):
-        if self._part_type.currentText() != "Part & Support":
-            return None
         if self._support_source.currentText() != "Generate from overhang":
             return None
         active = self._active_generated_support_path_and_options()
@@ -4611,12 +4676,10 @@ class WorkbenchMainWindow:
         self._support_geometry.blockSignals(True)
         self._support_geometry.setText("")
         self._support_geometry.blockSignals(False)
-        if hasattr(self._part_type, "setCurrentText"):
-            self._part_type.setCurrentText("Part only")
         self._invalidate_voxelization()
         self._append_log(
-            "Support cleared. Part type is now Part only; switch back to Part & Support "
-            "to generate or select support."
+            "Support cleared. Voxelization will continue without support unless support "
+            "is generated or selected."
         )
         part_path = self._part_geometry.text().strip()
         if part_path and Path(part_path).exists():
@@ -4625,13 +4688,6 @@ class WorkbenchMainWindow:
     def _generate_support_preview(self) -> None:
         if self._busy:
             self._append_log("A task is already in progress.")
-            return
-        if self._part_type.currentText() != "Part & Support":
-            self._QMessageBox.warning(
-                self._window,
-                "Support disabled",
-                "Select Part & Support before generating support.",
-            )
             return
         if self._support_source.currentText() != "Generate from overhang":
             self._QMessageBox.warning(
@@ -5829,7 +5885,7 @@ class WorkbenchMainWindow:
             self._save_result_button.setEnabled(True)
             self._append_log("Complete")
             self._append_log(f"Out-of-CAD voxels: {outside_voxels}")
-            self._navigation.setCurrentRow(1)
+            self._navigation.setCurrentRow(2)
         except Exception as exc:
             self._simulation_failed(config, str(exc))
             return
@@ -5988,7 +6044,6 @@ class WorkbenchMainWindow:
         if hasattr(self, "_generate_support_button"):
             can_generate_support = (
                 (not busy)
-                and self._part_type.currentText() == "Part & Support"
                 and self._support_source.currentText() == "Generate from overhang"
             )
             self._generate_support_button.setEnabled(can_generate_support)
@@ -5996,13 +6051,10 @@ class WorkbenchMainWindow:
                 "Generating..." if busy and task == "support_generation" else "Generate"
             )
         if hasattr(self, "_clear_support_button"):
-            self._clear_support_button.setEnabled(
-                (not busy) and self._part_type.currentText() == "Part & Support"
-            )
+            self._clear_support_button.setEnabled(not busy)
         if hasattr(self, "_save_support_button"):
             can_save_support = (
                 (not busy)
-                and self._part_type.currentText() == "Part & Support"
                 and self._support_source.currentText() == "Generate from overhang"
                 and self._last_generated_support_grid is not None
             )
@@ -6099,6 +6151,7 @@ class WorkbenchMainWindow:
         if hasattr(self, "_save_voxel_grid_button"):
             self._save_voxel_grid_button.setEnabled(False)
         self._voxel_status_label.setText("Required")
+        self._set_print_build_required()
         self._update_preview_source_availability()
         self._append_log("Voxelization cleared. Run voxelization again before simulation.")
 
@@ -6139,44 +6192,38 @@ class WorkbenchMainWindow:
             raise ValueError("Select a valid part geometry STL file.")
         geometry_path = self._part_geometry_processing_path()
         support_geometry_path = None
-        support_type = "Volume support"
+        support_type = self._support_type.currentText()
         support_generation = None
-        if self._part_type.currentText() == "Part & Support":
-            support_type = self._support_type.currentText()
-            if self._support_source.currentText() == "External STL":
-                support_geometry_path = Path(self._support_geometry.text().strip())
+        if self._support_source.currentText() == "External STL":
+            support_text = self._support_geometry.text().strip()
+            if support_text:
+                support_geometry_path = Path(support_text)
                 if not support_geometry_path.exists():
-                    raise ValueError("Select a valid support geometry STL file.")
-            else:
-                generated_support = None
-                active_options = self._active_generated_support_options()
-                if active_options is not None:
-                    support_generation = active_options
-                    support_type = (
-                        "Line support"
-                        if active_options.support_type == "X surface support"
-                        else "Volume support"
-                    )
-                    active_support_path = getattr(
-                        self,
-                        "_last_generated_support_path",
-                        None,
-                    )
-                    if (
-                        active_support_path is not None
-                        and Path(active_support_path).exists()
-                    ):
-                        support_geometry_path = Path(active_support_path)
-                else:
-                    generated_support = self._generated_support_path_and_voxel_type()
-                if generated_support is not None:
-                    support_geometry_path, support_type = generated_support
-                elif support_generation is None:
                     raise ValueError(
-                        "Part & Support is enabled, but no active generated support is "
-                        "available. Click Generate after changing geometry, orientation, "
-                        "or support options before voxelizing."
+                        "Select a valid support geometry STL file, or clear the support "
+                        "path to continue without support."
                     )
+        else:
+            generated_support = None
+            active_options = self._active_generated_support_options()
+            if active_options is not None:
+                support_generation = active_options
+                support_type = (
+                    "Line support"
+                    if active_options.support_type == "X surface support"
+                    else "Volume support"
+                )
+                active_support_path = getattr(
+                    self,
+                    "_last_generated_support_path",
+                    None,
+                )
+                if active_support_path is not None and Path(active_support_path).exists():
+                    support_geometry_path = Path(active_support_path)
+            else:
+                generated_support = self._generated_support_path_and_voxel_type()
+            if generated_support is not None:
+                support_geometry_path, support_type = generated_support
 
         neighborhood_text = self._neighborhood.currentText()
         if neighborhood_text == "SimpleVN":

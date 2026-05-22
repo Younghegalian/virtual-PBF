@@ -75,6 +75,7 @@ class _ComboProbe:
     def __init__(self, text):
         self.text = text
         self.visible = None
+        self.enabled = None
 
     def currentText(self):
         return self.text
@@ -82,22 +83,8 @@ class _ComboProbe:
     def setVisible(self, visible):
         self.visible = bool(visible)
 
-
-class _ToggleProbe(_WidgetProbe):
-    def __init__(self, checked=False):
-        super().__init__()
-        self.checked = bool(checked)
-        self.text = ""
-        self.arrow = None
-
-    def isChecked(self):
-        return self.checked
-
-    def setText(self, text):
-        self.text = text
-
-    def setArrowType(self, arrow):
-        self.arrow = arrow
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
 
 
 class _CheckProbe(_WidgetProbe):
@@ -107,12 +94,6 @@ class _CheckProbe(_WidgetProbe):
 
     def isChecked(self):
         return self.checked
-
-
-class _QtProbe:
-    class ArrowType:
-        DownArrow = "down"
-        RightArrow = "right"
 
 
 class _PreviewProbe:
@@ -517,38 +498,64 @@ def test_backend_status_line_is_compact():
     assert "\n" not in view._backend_status_line(status)
 
 
-def test_support_options_expand_only_for_part_and_support():
+def test_support_options_are_always_visible_and_source_driven():
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._Qt = _QtProbe()
-    view._part_type = _ComboProbe("Part only")
-    view._support_options_toggle = _ToggleProbe(checked=True)
+    view._busy = False
+    view._last_generated_support_grid = None
+    view._support_source = _ComboProbe("Generate from overhang")
     view._support_options_panel = _WidgetProbe()
     view._support_geometry = _WidgetProbe()
-    view._support_type = _WidgetProbe()
+    view._support_type = _ComboProbe("Volume support")
+    view._support_thickness = _TextFieldProbe("0.5")
+    view._support_generation_fields = [view._support_thickness]
+    view._generate_support_button = _ButtonProbe()
+    view._clear_support_button = _ButtonProbe()
+    view._save_support_button = _ButtonProbe()
 
     view._update_support_controls()
 
-    assert view._support_options_toggle.enabled is False
+    assert view._support_source.enabled is True
     assert view._support_geometry.enabled is False
-    assert view._support_type.enabled is False
-    assert view._support_options_panel.visible is False
-    assert view._support_options_toggle.text == "Show support options"
-    assert view._support_options_toggle.arrow == "right"
+    assert view._support_type.enabled is True
+    assert view._support_thickness.enabled is True
+    assert view._generate_support_button.enabled is True
+    assert view._clear_support_button.enabled is True
+    assert view._save_support_button.enabled is False
+    assert view._support_options_panel.visible is True
 
-    view._part_type.text = "Part & Support"
-    view._support_options_toggle.checked = False
+    view._support_source.text = "External STL"
     view._update_support_controls()
 
-    assert view._support_options_toggle.enabled is True
     assert view._support_geometry.enabled is True
-    assert view._support_type.enabled is True
-    assert view._support_options_panel.visible is False
-
-    view._toggle_support_options(True)
-
+    assert view._support_thickness.enabled is False
+    assert view._generate_support_button.enabled is False
     assert view._support_options_panel.visible is True
-    assert view._support_options_toggle.text == "Hide support options"
-    assert view._support_options_toggle.arrow == "down"
+
+
+def test_virtual_printing_build_summary_uses_separate_rows():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._print_build_label = _LineEditProbe()
+    view._print_build_grid_label = _LineEditProbe()
+    view._print_build_spacing_label = _LineEditProbe()
+    view._print_build_support_label = _LineEditProbe()
+    grid = VoxelGrid(
+        np.ones((2, 3, 4), dtype=bool),
+        spacing=0.5,
+    )
+
+    view._set_print_build_ready(grid, 161974)
+
+    assert view._print_build_label.text == "Ready"
+    assert view._print_build_grid_label.text == "2 x 3 x 4"
+    assert view._print_build_spacing_label.text == "0.5 mm"
+    assert view._print_build_support_label.text == "161,974 voxels"
+
+    view._set_print_build_required()
+
+    assert view._print_build_label.text == "Voxelization required"
+    assert view._print_build_grid_label.text == "-"
+    assert view._print_build_spacing_label.text == "-"
+    assert view._print_build_support_label.text == "-"
 
 
 def test_generated_support_is_inactive_until_button_result_matches(tmp_path):
@@ -557,7 +564,6 @@ def test_generated_support_is_inactive_until_button_result_matches(tmp_path):
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("1.0")
@@ -586,7 +592,6 @@ def test_generated_support_path_is_ignored_when_options_are_stale(tmp_path):
     support = tmp_path / "support.stl"
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._support_geometry = _TextFieldProbe("")
     view._support_type = _ComboProbe("Volume support")
@@ -603,7 +608,6 @@ def test_generated_support_path_uses_active_generation_options(tmp_path):
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("1.0")
@@ -632,7 +636,6 @@ def test_generated_support_stays_active_when_grid_spacing_changes(tmp_path):
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("0.5")
@@ -669,7 +672,6 @@ def test_generated_support_snapshot_ignores_solver_fields(tmp_path):
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("0.5")
@@ -707,7 +709,6 @@ def test_simulation_config_reuses_generated_support_after_solver_and_spacing_cha
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._output_dir = _TextFieldProbe(output_dir)
@@ -758,13 +759,92 @@ def test_simulation_config_reuses_generated_support_after_solver_and_spacing_cha
     assert config.solver.backend == SolverBackend.CUDA
 
 
+def test_simulation_config_skips_support_when_nothing_was_generated(tmp_path):
+    part = tmp_path / "part.stl"
+    output_dir = tmp_path / "out"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._output_dir = _TextFieldProbe(output_dir)
+    view._grid_spacing = _TextFieldProbe("0.2")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_dirty = False
+    view._neighborhood = _ComboProbe("SimpleM")
+    view._coeff_x_neg = _TextFieldProbe("0.2")
+    view._coeff_x_pos = _TextFieldProbe("0.2")
+    view._coeff_y_neg = _TextFieldProbe("0.2")
+    view._coeff_y_pos = _TextFieldProbe("0.2")
+    view._coeff_current = _TextFieldProbe("0.07")
+    view._coeff_lower = _TextFieldProbe("1")
+    view._coeff_moore_l = _TextFieldProbe("0.125")
+    view._coeff_moore_cl = _TextFieldProbe("1")
+    view._residual_avg = _TextFieldProbe("1E-6")
+    view._residual_max = _TextFieldProbe("1E-5")
+    view._overwrap = _TextFieldProbe("0.1")
+    view._iteration_bound = _TextFieldProbe("500")
+    view._min_bias = _TextFieldProbe("0.05")
+    view._stochastic_mode = _ComboProbe("In-layer")
+    view._idp = _TextFieldProbe("0.3")
+    view._selected_machine_map_path = lambda: None
+    view._selected_solver_backend = lambda: SolverBackend.CPU_NATIVE
+
+    config = view._simulation_config_from_form()
+
+    assert config.support_geometry_path is None
+    assert config.support_generation is None
+    assert config.voxel_spacing == 0.2
+
+
+def test_blank_external_support_path_is_treated_as_no_support(tmp_path):
+    part = tmp_path / "part.stl"
+    output_dir = tmp_path / "out"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._support_source = _ComboProbe("External STL")
+    view._part_geometry = _TextFieldProbe(part)
+    view._output_dir = _TextFieldProbe(output_dir)
+    view._grid_spacing = _TextFieldProbe("0.2")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._neighborhood = _ComboProbe("SimpleM")
+    view._coeff_x_neg = _TextFieldProbe("0.2")
+    view._coeff_x_pos = _TextFieldProbe("0.2")
+    view._coeff_y_neg = _TextFieldProbe("0.2")
+    view._coeff_y_pos = _TextFieldProbe("0.2")
+    view._coeff_current = _TextFieldProbe("0.07")
+    view._coeff_lower = _TextFieldProbe("1")
+    view._coeff_moore_l = _TextFieldProbe("0.125")
+    view._coeff_moore_cl = _TextFieldProbe("1")
+    view._residual_avg = _TextFieldProbe("1E-6")
+    view._residual_max = _TextFieldProbe("1E-5")
+    view._overwrap = _TextFieldProbe("0.1")
+    view._iteration_bound = _TextFieldProbe("500")
+    view._min_bias = _TextFieldProbe("0.05")
+    view._stochastic_mode = _ComboProbe("In-layer")
+    view._idp = _TextFieldProbe("0.3")
+    view._selected_machine_map_path = lambda: None
+    view._selected_solver_backend = lambda: SolverBackend.CPU_REFERENCE
+
+    config = view._simulation_config_from_form()
+
+    assert config.support_geometry_path is None
+    assert config.support_generation is None
+
+
 def test_generated_support_snapshot_invalidates_on_support_settings_change(tmp_path):
     part = tmp_path / "part.stl"
     support = tmp_path / "support.stl"
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("0.5")
@@ -816,7 +896,6 @@ def test_generated_support_grid_cache_miss_on_spacing_change_keeps_support_path(
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("0.25")
@@ -856,7 +935,6 @@ def test_generated_support_grid_can_be_reused_without_preview_stl(tmp_path):
     part.write_text("solid part\nendsolid part\n", encoding="utf-8")
     grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._part_type = _ComboProbe("Part & Support")
     view._support_source = _ComboProbe("Generate from overhang")
     view._part_geometry = _TextFieldProbe(part)
     view._grid_spacing = _TextFieldProbe("0.5")
