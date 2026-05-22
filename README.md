@@ -1,5 +1,9 @@
 # Virtual PBF Workbench
 
+<p align="center">
+  <img src="docs/images/virtual-pbf-banner.svg" alt="Virtual PBF Workbench banner">
+</p>
+
 <p>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB">
   <img alt="PySide6" src="https://img.shields.io/badge/gui-PySide6-41CD52">
