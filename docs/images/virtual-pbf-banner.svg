@@ -1,72 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Virtual PBF Workbench icon banner">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Virtual PBF Workbench icon village banner">
   <defs>
-    <linearGradient id="bg" x1="120" y1="22" x2="1110" y2="356" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bannerBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.48" stop-color="#183456"/>
+      <stop offset="1" stop-color="#0b7285"/>
+    </linearGradient>
+    <radialGradient id="bannerGlow" cx="53%" cy="45%" r="58%">
+      <stop offset="0" stop-color="#7dd3fc" stop-opacity="0.28"/>
+      <stop offset="0.5" stop-color="#0ea5e9" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="groundMelt" x1="0" y1="260" x2="1280" y2="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0"/>
+      <stop offset="0.2" stop-color="#fbbf24" stop-opacity="0.34"/>
+      <stop offset="0.5" stop-color="#f97316" stop-opacity="0.62"/>
+      <stop offset="0.82" stop-color="#ef4444" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#ef4444" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="iconBg" x1="42" y1="22" x2="218" y2="232" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#0f172a"/>
       <stop offset="0.58" stop-color="#1e3a5f"/>
       <stop offset="1" stop-color="#0b7285"/>
     </linearGradient>
-    <linearGradient id="melt" x1="420" y1="204" x2="910" y2="300" gradientUnits="userSpaceOnUse">
+    <linearGradient id="iconMelt" x1="82" y1="142" x2="184" y2="195" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#fbbf24"/>
       <stop offset="0.55" stop-color="#f97316"/>
       <stop offset="1" stop-color="#ef4444"/>
     </linearGradient>
-    <linearGradient id="cubeTop" x1="420" y1="64" x2="790" y2="168" gradientUnits="userSpaceOnUse">
+    <linearGradient id="iconCubeTop" x1="82" y1="62" x2="176" y2="122" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#e0f2fe"/>
       <stop offset="1" stop-color="#38bdf8"/>
     </linearGradient>
-    <linearGradient id="cubeSide" x1="612" y1="140" x2="920" y2="244" gradientUnits="userSpaceOnUse">
+    <linearGradient id="iconCubeSide" x1="122" y1="98" x2="190" y2="158" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#22d3ee"/>
       <stop offset="1" stop-color="#2563eb"/>
     </linearGradient>
-    <linearGradient id="meltSoft" x1="0" y1="260" x2="1280" y2="316" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#fbbf24" stop-opacity="0"/>
-      <stop offset="0.18" stop-color="#fbbf24" stop-opacity="0.48"/>
-      <stop offset="0.52" stop-color="#f97316" stop-opacity="0.58"/>
-      <stop offset="0.82" stop-color="#ef4444" stop-opacity="0.45"/>
-      <stop offset="1" stop-color="#ef4444" stop-opacity="0"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="48%" r="54%">
-      <stop offset="0" stop-color="#7dd3fc" stop-opacity="0.35"/>
-      <stop offset="0.42" stop-color="#0ea5e9" stop-opacity="0.12"/>
-      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#020617" flood-opacity="0.38"/>
+    <filter id="iconShadow" x="-22%" y="-22%" width="144%" height="156%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#020617" flood-opacity="0.38"/>
     </filter>
-    <filter id="wideShadow" x="-20%" y="-80%" width="140%" height="260%">
-      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#020617" flood-opacity="0.35"/>
+    <filter id="groundShadow" x="-20%" y="-80%" width="140%" height="260%">
+      <feDropShadow dx="0" dy="22" stdDeviation="20" flood-color="#020617" flood-opacity="0.34"/>
     </filter>
+
+    <symbol id="pbfIcon" viewBox="0 0 256 256">
+      <rect width="256" height="256" rx="54" fill="url(#iconBg)"/>
+      <g filter="url(#iconShadow)">
+        <path d="M63 155c0-16 30-29 67-29s67 13 67 29-30 29-67 29-67-13-67-29z" fill="#0f172a" opacity="0.35"/>
+        <path d="M58 166c15-16 37-25 66-25 31 0 57 11 74 27-11 25-36 43-69 43-32 0-59-18-71-45z" fill="url(#iconMelt)"/>
+        <path d="M75 164c11-8 29-14 52-14 25 0 46 7 59 17-10 14-30 24-57 24-26 0-46-10-54-27z" fill="#fed7aa" opacity="0.28"/>
+        <path d="M84 91l44-27 45 27-45 27-44-27z" fill="url(#iconCubeTop)"/>
+        <path d="M84 91l44 27v54l-44-27V91z" fill="#0891b2"/>
+        <path d="M128 118l45-27v54l-45 27v-54z" fill="url(#iconCubeSide)"/>
+        <path d="M96 116l20 12v26l-20-12v-26z" fill="#67e8f9" opacity="0.72"/>
+        <path d="M141 127l20-12v27l-20 12v-27z" fill="#bfdbfe" opacity="0.6"/>
+        <circle cx="113" cy="94" r="5" fill="#0f172a"/>
+        <circle cx="143" cy="94" r="5" fill="#0f172a"/>
+        <path d="M119 105c6 6 12 6 18 0" fill="none" stroke="#0f172a" stroke-width="5" stroke-linecap="round"/>
+        <path d="M187 63l6 14 14 6-14 6-6 14-6-14-14-6 14-6 6-14z" fill="#fef3c7"/>
+        <path d="M67 55l4 9 9 4-9 4-4 9-4-9-9-4 9-4 4-9z" fill="#bae6fd"/>
+      </g>
+    </symbol>
   </defs>
 
-  <rect width="1280" height="360" rx="42" fill="url(#bg)"/>
-  <rect width="1280" height="360" rx="42" fill="url(#glow)"/>
+  <rect width="1280" height="360" rx="42" fill="url(#bannerBg)"/>
+  <rect width="1280" height="360" rx="42" fill="url(#bannerGlow)"/>
 
-  <path d="M0 260C146 218 250 292 384 244C530 191 606 135 780 158C930 178 1042 254 1280 185V360H0Z" fill="#0f172a" opacity="0.22"/>
-  <path d="M0 305C184 260 287 326 463 285C638 244 733 214 916 242C1051 263 1133 305 1280 276V360H0Z" fill="#020617" opacity="0.22"/>
-
-  <g filter="url(#wideShadow)">
-    <path d="M226 250c0-57 180-103 402-103s402 46 402 103-180 103-402 103-402-46-402-103z" fill="#0f172a" opacity="0.35"/>
-    <path d="M96 287c116-74 280-111 493-111 230 0 424 46 550 122-82 40-261 64-504 64-247 0-440-28-539-75z" fill="url(#meltSoft)"/>
+  <path d="M0 282C138 233 246 292 383 252C543 205 640 154 815 179C955 199 1076 263 1280 207V360H0Z" fill="#020617" opacity="0.18"/>
+  <g filter="url(#groundShadow)">
+    <path d="M79 292c128-63 310-98 544-98 250 0 457 39 593 102-106 48-305 73-598 73-274 0-454-26-539-77z" fill="url(#groundMelt)"/>
+    <path d="M182 304c101-39 255-61 458-61 210 0 375 24 467 63-86 34-248 51-479 51-215 0-365-18-446-53z" fill="#fed7aa" opacity="0.11"/>
   </g>
 
-  <g transform="translate(370 35)" filter="url(#softShadow)">
-    <path d="M0 224c91-52 224-82 400-82 188 0 346 38 449 91-67 70-219 112-429 112-204 0-366-44-420-121z" fill="url(#melt)"/>
-    <path d="M84 226c67-28 178-48 315-48 150 0 276 24 354 56-64 41-183 67-340 67-160 0-277-27-329-75z" fill="#fed7aa" opacity="0.28"/>
+  <use href="#pbfIcon" x="504" y="44" width="252" height="252"/>
+  <use href="#pbfIcon" x="362" y="87" width="172" height="172" opacity="0.95"/>
+  <use href="#pbfIcon" x="736" y="88" width="174" height="174" opacity="0.96"/>
+  <use href="#pbfIcon" x="244" y="142" width="118" height="118" opacity="0.9"/>
+  <use href="#pbfIcon" x="902" y="146" width="120" height="120" opacity="0.9"/>
+  <use href="#pbfIcon" x="416" y="195" width="92" height="92" opacity="0.84"/>
+  <use href="#pbfIcon" x="763" y="204" width="88" height="88" opacity="0.84"/>
+  <use href="#pbfIcon" x="593" y="238" width="74" height="74" opacity="0.78"/>
 
-    <path d="M165 91l266-82 271 82-271 82-266-82z" fill="url(#cubeTop)"/>
-    <path d="M165 91l266 82v150L165 242V91z" fill="#0891b2"/>
-    <path d="M431 173l271-82v151l-271 81V173z" fill="url(#cubeSide)"/>
-
-    <path d="M237 166l121 37v72l-121-37v-72z" fill="#67e8f9" opacity="0.72"/>
-    <path d="M512 206l120-37v74l-120 37v-74z" fill="#bfdbfe" opacity="0.6"/>
-
-    <circle cx="337" cy="99" r="18" fill="#0f172a"/>
-    <circle cx="519" cy="99" r="18" fill="#0f172a"/>
-    <path d="M373 132c37 25 73 25 110 0" fill="none" stroke="#0f172a" stroke-width="20" stroke-linecap="round"/>
-  </g>
-
-  <path d="M948 35l18 42 42 18-42 18-18 42-18-42-42-18 42-18 18-42z" fill="#fef3c7"/>
-  <path d="M232 56l14 31 31 14-31 14-14 31-14-31-31-14 31-14 14-31z" fill="#bae6fd"/>
-  <path d="M1058 205l10 23 23 10-23 10-10 23-10-23-23-10 23-10 10-23z" fill="#fde68a" opacity="0.9"/>
-  <path d="M166 210l8 18 18 8-18 8-8 18-8-18-18-8 18-8 8-18z" fill="#cffafe" opacity="0.85"/>
+  <path d="M196 70l14 31 31 14-31 14-14 31-14-31-31-14 31-14 14-31z" fill="#bae6fd" opacity="0.92"/>
+  <path d="M1026 45l18 42 42 18-42 18-18 42-18-42-42-18 42-18 18-42z" fill="#fef3c7" opacity="0.95"/>
+  <path d="M1115 218l9 21 21 9-21 9-9 21-9-21-21-9 21-9 9-21z" fill="#fde68a" opacity="0.84"/>
+  <path d="M143 231l8 18 18 8-18 8-8 18-8-18-18-8 18-8 8-18z" fill="#cffafe" opacity="0.78"/>
 </svg>
