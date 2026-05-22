@@ -3,6 +3,7 @@ import numpy as np
 from capp.domain import SolverParameters, VoxelGrid
 from capp.solver.reference import (
     ReferenceLayerwiseMarkovSolver,
+    _idp_model_without_support,
     _postprocess_binary,
     _update_von_neumann_layer,
 )
@@ -83,3 +84,27 @@ def test_lower_layer_growth_is_gated_by_current_cad_voxel():
     )
 
     assert updated[0, 0] == 0.0
+
+
+def test_support_mask_only_suppresses_idp_term():
+    support_layer = np.zeros((3, 3), dtype=bool)
+    support_layer[1, 1] = True
+
+    idp_model = _idp_model_without_support(0.8, support_layer)
+
+    assert idp_model[1, 1] == 0.0
+    assert idp_model[0, 0] == 0.8
+
+    probability = np.zeros((5, 5, 3), dtype=np.float32)
+    voxel_calc = np.ones((5, 5, 3), dtype=np.float32)
+    probability[2, 1, 1] = 1.0
+    updated = _update_von_neumann_layer(
+        probability=probability,
+        voxel_calc=voxel_calc,
+        layer=1,
+        coeffs=(1.0, 0.0, 0.0, 0.0, 0.0),
+        min_val=0.0,
+        idp_model=idp_model,
+    )
+
+    assert updated[1, 1] > 0.0

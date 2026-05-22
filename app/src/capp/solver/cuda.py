@@ -16,7 +16,11 @@ from capp.domain import (
     StochasticMode,
     VoxelGrid,
 )
-from capp.solver.reference import _has_initial_deviation, _kernel_coefficients, _postprocess_binary
+from capp.solver.reference import (
+    _has_initial_deviation,
+    _kernel_coefficients,
+    _postprocess_binary,
+)
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -54,6 +58,11 @@ class CudaLayerwiseMarkovSolver:
 
         voxel_calc = cp.pad(voxel, ((1, 1), (1, 1), (1, 1)), mode="constant")
         voxel_calc[:, :, 0] = 1.0
+        support_calc = cp.pad(
+            cp.asarray(grid.support_mask, dtype=cp.bool_),
+            ((1, 1), (1, 1), (1, 1)),
+            mode="constant",
+        )
 
         probability = cp.zeros_like(voxel_calc, dtype=cp.float32)
         probability[:, :, 0] = 1.0
@@ -86,6 +95,8 @@ class CudaLayerwiseMarkovSolver:
         for layer in range(1, z_size + 1):
             center_voxel = voxel_calc[1 : x_size + 1, 1 : y_size + 1, layer]
             layer_view = probability[1 : x_size + 1, 1 : y_size + 1, layer]
+            support_layer = support_calc[1 : x_size + 1, 1 : y_size + 1, layer]
+            layer_idp_model = _idp_model_without_support_gpu(cp, idp_model, support_layer)
             _layer_progress(progress.report, layer, z_size, 0, parameters.iteration_bound)
 
             if layer <= beta:
@@ -106,7 +117,7 @@ class CudaLayerwiseMarkovSolver:
                         layer=layer,
                         coeffs=coeffs,
                         min_val=min_val,
-                        idp_model=idp_model,
+                        idp_model=layer_idp_model,
                     )
                     delta = cp.abs(previous_center - updated)
                     changed = int(cp.count_nonzero(delta).get())
@@ -202,6 +213,17 @@ def _update_von_neumann_layer_gpu(
         1.0 - no_growth + epsilon
     )
     return cp.clip(updated, 0.0, 1.0).astype(cp.float32, copy=False)
+
+
+def _idp_model_without_support_gpu(cp, idp_model, support_layer):
+    if not bool(cp.any(support_layer).get()):
+        return idp_model
+    if getattr(idp_model, "ndim", 0) == 0:
+        masked = cp.full(support_layer.shape, float(idp_model), dtype=cp.float32)
+    else:
+        masked = idp_model.copy()
+    masked[support_layer] = 0.0
+    return masked
 
 
 def _smooth_binary_gpu(cp, binary, max_iterations: int):

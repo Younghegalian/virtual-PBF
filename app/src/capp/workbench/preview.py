@@ -454,7 +454,11 @@ class PreviewPane:
             plotter.add_axes()
             self._set_cad_camera(plotter, _combined_mesh_bounds(part_mesh, support_mesh))
             self._render_plotter(plotter)
-            title = "CAD + Support Overhang" if display_mode == "Overhang angle" else "CAD + Support"
+            title = (
+                "CAD + Support Overhang"
+                if display_mode == "Overhang angle"
+                else "CAD + Support"
+            )
             self._title.setText(title)
             self._status.setText("")
         except Exception as exc:
@@ -667,7 +671,6 @@ class PreviewPane:
                 plotter.enable_eye_dome_lighting()
 
             fallback_stride = 0
-            volume_mapper = ""
             if surface_mode:
                 self._add_isosurface(
                     plotter,
@@ -730,7 +733,7 @@ class PreviewPane:
                 self._add_volume_slices(plotter, grid, label)
             else:
                 try:
-                    volume_mapper = self._add_paraview_volume(
+                    self._add_paraview_volume(
                         plotter,
                         grid,
                         label,

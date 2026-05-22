@@ -81,6 +81,35 @@ std::vector<float> read_float_grid(py::handle value, Shape3 shape, const std::st
   return std::vector<float>(data, data + shape.x * shape.y);
 }
 
+std::vector<std::uint8_t> read_support_mask(py::dict parameters, Shape3 cropped, Shape3 padded) {
+  std::vector<std::uint8_t> mask(padded.x * padded.y * padded.z, 0);
+  if (!parameters.contains("support_mask") || parameters["support_mask"].is_none()) {
+    return mask;
+  }
+
+  auto array = py::array_t<bool, py::array::c_style | py::array::forcecast>::ensure(
+      parameters["support_mask"]);
+  if (!array) {
+    throw std::runtime_error("support_mask must be convertible to a boolean array.");
+  }
+  auto info = array.request();
+  if (info.ndim != 3 || info.shape[0] != static_cast<py::ssize_t>(cropped.x) ||
+      info.shape[1] != static_cast<py::ssize_t>(cropped.y) ||
+      info.shape[2] != static_cast<py::ssize_t>(cropped.z)) {
+    throw std::runtime_error("support_mask must be a 3D boolean array matching voxel shape.");
+  }
+
+  const bool* data = static_cast<const bool*>(info.ptr);
+  for (std::size_t i = 0; i < cropped.x; ++i) {
+    for (std::size_t j = 0; j < cropped.y; ++j) {
+      for (std::size_t k = 0; k < cropped.z; ++k) {
+        mask[idx(i + 1, j + 1, k + 1, padded)] = data[idx(i, j, k, cropped)] ? 1 : 0;
+      }
+    }
+  }
+  return mask;
+}
+
 SpatialParameters parse_spatial_parameters(py::dict parameters, Shape3 cropped) {
   SpatialParameters spatial{};
   if (parameters.contains("spatial_current_coefficients") &&
@@ -348,6 +377,7 @@ py::dict solve_von_neumann(
     throw std::runtime_error("Spatial machine parameter maps require DirectionalVN.");
   }
   const bool* voxel = static_cast<const bool*>(voxel_info.ptr);
+  std::vector<std::uint8_t> support_mask = read_support_mask(parameters, cropped, padded);
 
   std::vector<float> voxel_calc(padded.x * padded.y * padded.z, 0.0F);
   std::vector<float> probability(voxel_calc.size(), 0.0F);
@@ -419,8 +449,8 @@ py::dict solve_von_neumann(
       if (static_cast<int>(layer) <= beta) {
         for (std::size_t i = 0; i < cropped.x; ++i) {
           for (std::size_t j = 0; j < cropped.y; ++j) {
-            probability[idx(i + 1, j + 1, layer, padded)] =
-                voxel_calc[idx(i + 1, j + 1, layer, padded)];
+            std::size_t cell = idx(i + 1, j + 1, layer, padded);
+            probability[cell] = voxel_calc[cell];
           }
         }
       } else {
@@ -443,6 +473,7 @@ py::dict solve_von_neumann(
             for (std::size_t j = 0; j < cropped.y; ++j) {
               float center_voxel = voxel_calc[idx(i + 1, j + 1, layer, padded)];
               std::size_t map_cell = idx2(i, j, cropped);
+              std::size_t padded_cell = idx(i + 1, j + 1, layer, padded);
               float neg_y = spatial.neg_y.empty() ? params.coeffs.neg_y : spatial.neg_y[map_cell];
               float pos_x = spatial.pos_x.empty() ? params.coeffs.pos_x : spatial.pos_x[map_cell];
               float pos_y = spatial.pos_y.empty() ? params.coeffs.pos_y : spatial.pos_y[map_cell];
@@ -453,6 +484,9 @@ py::dict solve_von_neumann(
                                          ? idp_model
                                          : spatial.initial_deviation[map_cell] /
                                                static_cast<float>(spacing);
+              if (support_mask[padded_cell]) {
+                idp_model_cell = 0.0F;
+              }
               float left = probability[idx(i + 1, j, layer, padded)] * neg_y;
               float upper = probability[idx(i, j + 1, layer, padded)] * pos_x;
               float lower_x =

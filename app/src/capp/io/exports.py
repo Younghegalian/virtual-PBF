@@ -181,12 +181,11 @@ def _surface_support_directions(
 
     positive = occupied(-1, -1) or occupied(1, 1)
     negative = occupied(-1, 1) or occupied(1, -1)
-    inv_sqrt2 = 2.0**-0.5
     directions: list[tuple[float, float]] = []
     if positive:
-        directions.append((inv_sqrt2, inv_sqrt2))
+        directions.append((1.0, 1.0))
     if negative:
-        directions.append((inv_sqrt2, -inv_sqrt2))
+        directions.append((1.0, -1.0))
     if not directions:
         directions.append((1.0, 0.0))
     return directions

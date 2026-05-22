@@ -53,6 +53,11 @@ class ReferenceLayerwiseMarkovSolver:
 
         voxel_calc = np.pad(voxel, ((1, 1), (1, 1), (1, 1)), mode="constant")
         voxel_calc[:, :, 0] = 1.0
+        support_calc = np.pad(
+            grid.support_mask.astype(bool, copy=False),
+            ((1, 1), (1, 1), (1, 1)),
+            mode="constant",
+        )
 
         probability = np.zeros_like(voxel_calc, dtype=np.float32)
         probability[:, :, 0] = 1.0
@@ -82,6 +87,8 @@ class ReferenceLayerwiseMarkovSolver:
         for layer in range(1, z_size + 1):
             center_voxel = voxel_calc[1 : x_size + 1, 1 : y_size + 1, layer]
             layer_view = probability[1 : x_size + 1, 1 : y_size + 1, layer]
+            support_layer = support_calc[1 : x_size + 1, 1 : y_size + 1, layer]
+            layer_idp_model = _idp_model_without_support(idp_model, support_layer)
             progress.layer(
                 layer=layer,
                 layer_count=z_size,
@@ -108,7 +115,7 @@ class ReferenceLayerwiseMarkovSolver:
                         layer=layer,
                         coeffs=coeffs,
                         min_val=min_val,
-                        idp_model=idp_model,
+                        idp_model=layer_idp_model,
                     )
 
                     delta = np.abs(previous_center - updated)
@@ -223,10 +230,16 @@ def _has_initial_deviation(parameters: SolverParameters) -> bool:
     return parameters.initial_deviation > 0.0
 
 
-def _has_initial_deviation(parameters: SolverParameters) -> bool:
-    if parameters.spatial_initial_deviation is not None:
-        return bool(np.any(parameters.spatial_initial_deviation > 0.0))
-    return parameters.initial_deviation > 0.0
+def _idp_model_without_support(idp_model, support_layer: NDArray[np.bool_]):
+    support = np.asarray(support_layer, dtype=bool)
+    if not np.any(support):
+        return idp_model
+    if np.ndim(idp_model) == 0:
+        masked = np.full(support.shape, float(idp_model), dtype=np.float32)
+    else:
+        masked = np.asarray(idp_model, dtype=np.float32).copy()
+    masked[support] = 0.0
+    return masked
 
 
 def _update_von_neumann_layer(

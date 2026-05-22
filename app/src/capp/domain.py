@@ -44,6 +44,7 @@ class SupportGenerationParameters:
     pitch: float = 2.0
     thickness: float = 0.5
     footprint_offset: float = 0.5
+    contact_depth: float = 0.0
     build_plate_z: float | None = 0.0
 
     def __post_init__(self) -> None:
@@ -52,6 +53,7 @@ class SupportGenerationParameters:
         object.__setattr__(self, "pitch", float(self.pitch))
         object.__setattr__(self, "thickness", float(self.thickness))
         object.__setattr__(self, "footprint_offset", float(self.footprint_offset))
+        object.__setattr__(self, "contact_depth", float(self.contact_depth))
         if self.build_plate_z is not None:
             object.__setattr__(self, "build_plate_z", float(self.build_plate_z))
         if not 0.0 <= self.overhang_angle <= 90.0:
@@ -62,6 +64,8 @@ class SupportGenerationParameters:
             raise ValueError("Support thickness must be positive.")
         if self.footprint_offset < 0:
             raise ValueError("Support footprint offset cannot be negative.")
+        if self.contact_depth < 0:
+            raise ValueError("Support contact overlap cannot be negative.")
 
 
 @dataclass(frozen=True)

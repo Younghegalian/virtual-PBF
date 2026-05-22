@@ -130,6 +130,7 @@ def _support_generation_from_raw(value: Any) -> SupportGenerationParameters | No
         pitch=float(value.get("pitch", 2.0)),
         thickness=float(value.get("thickness", 0.5)),
         footprint_offset=float(value.get("footprint_offset", 0.5)),
+        contact_depth=float(value.get("contact_depth", 0.0)),
         build_plate_z=(
             None
             if value.get("build_plate_z") is None

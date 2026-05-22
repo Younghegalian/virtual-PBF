@@ -30,13 +30,13 @@ class NativeLayerwiseMarkovSolver:
         payload = self._module.solve_von_neumann(
             grid.data,
             float(grid.spacing),
-            _parameters_payload(parameters),
+            _parameters_payload(parameters, grid.support_mask),
             progress_callback,
         )
         return _result_from_payload(payload, grid, perf_counter() - started)
 
 
-def _parameters_payload(parameters: SolverParameters) -> dict[str, object]:
+def _parameters_payload(parameters: SolverParameters, support_mask) -> dict[str, object]:
     payload: dict[str, object] = {
         "neighborhood": parameters.neighborhood.value,
         "current_coefficients": parameters.current_coefficients,
@@ -52,6 +52,7 @@ def _parameters_payload(parameters: SolverParameters) -> dict[str, object]:
         "spatial_current_coefficients": None,
         "spatial_min_bias": None,
         "spatial_initial_deviation": None,
+        "support_mask": support_mask,
     }
     if parameters.spatial_current_coefficients is not None:
         payload["spatial_current_coefficients"] = parameters.spatial_current_coefficients

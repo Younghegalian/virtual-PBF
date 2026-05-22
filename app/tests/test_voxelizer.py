@@ -144,6 +144,35 @@ def test_overhang_support_generation_extrudes_to_build_plate(tmp_path):
     assert np.any(support.data[:, :, :2])
 
 
+def test_support_contact_overlap_can_penetrate_part_for_preview_connection(tmp_path):
+    part_path = _box_stl(tmp_path, "contact_overlap_plate", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
+    part = voxelize_mesh(part_path, spacing=1.0)
+
+    support = generate_overhang_support_grid(
+        part_path,
+        part,
+        SupportGenerationParameters(
+            support_type="Volume support",
+            overhang_angle=60.0,
+            footprint_offset=0.0,
+            contact_depth=1.0,
+            build_plate_z=0.0,
+        ),
+    )
+
+    offset = np.rint(
+        (np.asarray(part.origin) - np.asarray(support.origin)) / support.spacing
+    ).astype(int)
+    part_in_support = np.zeros_like(support.data, dtype=bool)
+    part_in_support[
+        offset[0] : offset[0] + part.shape[0],
+        offset[1] : offset[1] + part.shape[1],
+        offset[2] : offset[2] + part.shape[2],
+    ] = part.data
+
+    assert np.any(support.data & part_in_support)
+
+
 def test_overhang_support_skips_faces_already_on_build_plate(tmp_path):
     part_path = _box_stl(tmp_path, "grounded_plate", (4.0, 4.0, 1.0), (2.0, 2.0, 0.5))
     part = voxelize_mesh(part_path, spacing=1.0)
@@ -492,6 +521,22 @@ def test_x_surface_export_keeps_both_diagonals_at_intersection(tmp_path):
 
     loaded = trimesh.load_mesh(output_path, process=False)
     assert len(loaded.faces) == 12
+
+
+def test_x_surface_export_spans_full_diagonal_cells(tmp_path):
+    volume = np.zeros((2, 2, 2), dtype=bool)
+    volume[0, 0, :] = True
+    volume[1, 1, :] = True
+    output_path = tmp_path / "x_connected_surface.stl"
+
+    write_surface_stl(output_path, volume, spacing=1.0, origin=(0.0, 0.0, 0.0))
+
+    loaded = trimesh.load_mesh(output_path, process=False)
+    vertices = np.asarray(loaded.vertices)
+    assert np.isclose(float(vertices[:, 0].min()), 0.0)
+    assert np.isclose(float(vertices[:, 0].max()), 2.0)
+    assert np.isclose(float(vertices[:, 1].min()), 0.0)
+    assert np.isclose(float(vertices[:, 1].max()), 2.0)
 
 
 def _box_stl(tmp_path, name, extents, translation):

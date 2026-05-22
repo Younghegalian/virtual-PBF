@@ -20,6 +20,7 @@ def test_load_simulation_config_parses_generated_support(tmp_path):
                 "  pitch: 2.5",
                 "  thickness: 0.75",
                 "  footprint_offset: 0.25",
+                "  contact_depth: 0.4",
                 "  build_plate_z: 0",
             ]
         ),
@@ -36,4 +37,5 @@ def test_load_simulation_config_parses_generated_support(tmp_path):
     assert config.support_generation.pitch == 2.5
     assert config.support_generation.thickness == 0.75
     assert config.support_generation.footprint_offset == 0.25
+    assert config.support_generation.contact_depth == 0.4
     assert config.support_generation.build_plate_z == 0.0

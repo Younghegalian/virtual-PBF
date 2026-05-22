@@ -1597,31 +1597,37 @@ class WorkbenchMainWindow:
         self._support_pitch = QLineEdit("2.0")
         self._support_thickness = QLineEdit("0.5")
         self._support_footprint_offset = QLineEdit("0.5")
+        self._support_contact_depth = QLineEdit("0.5")
         self._support_build_plate_z = QLineEdit("auto")
         self._support_generation_fields = [
             self._support_overhang_angle,
             self._support_pitch,
             self._support_thickness,
             self._support_footprint_offset,
+            self._support_contact_depth,
             self._support_build_plate_z,
         ]
         for field in self._support_generation_fields:
             field.textChanged.connect(self._invalidate_voxelization)
         support_form.addRow("Overhang angle (deg)", self._support_overhang_angle)
-        support_form.addRow("Pitch (mm)", self._support_pitch)
+        support_form.addRow("Pattern pitch (mm)", self._support_pitch)
         support_form.addRow("Thickness (mm)", self._support_thickness)
         support_form.addRow("Footprint offset XY (mm)", self._support_footprint_offset)
+        support_form.addRow("Contact overlap (mm)", self._support_contact_depth)
         support_form.addRow("Build plate Z (mm)", self._support_build_plate_z)
         support_action_row = QHBoxLayout()
         support_action_row.setContentsMargins(0, 0, 0, 0)
         support_action_row.setSpacing(4)
-        generate_support = QPushButton("Generate Support")
+        generate_support = QPushButton("Generate")
+        generate_support.setToolTip("Generate support preview")
         generate_support.clicked.connect(self._generate_support_preview)
         self._generate_support_button = generate_support
-        clear_support = QPushButton("Clear Support")
+        clear_support = QPushButton("Clear")
+        clear_support.setToolTip("Clear generated or selected support")
         clear_support.clicked.connect(self._clear_support_selection)
         self._clear_support_button = clear_support
-        save_support = QPushButton("Save Support STL")
+        save_support = QPushButton("Save STL")
+        save_support.setToolTip("Save generated support as STL")
         save_support.setEnabled(False)
         save_support.clicked.connect(self._save_generated_support_stl)
         self._save_support_button = save_support
@@ -4173,6 +4179,12 @@ class WorkbenchMainWindow:
 
         build_plate_text = self._support_build_plate_z.text().strip()
         support_type = self._support_type.currentText()
+        contact_depth_field = getattr(self, "_support_contact_depth", None)
+        contact_depth = (
+            self._float(contact_depth_field, "Support contact overlap")
+            if contact_depth_field is not None
+            else 0.0
+        )
         thickness = (
             1.0
             if support_type == "X surface support"
@@ -4190,6 +4202,7 @@ class WorkbenchMainWindow:
                 self._support_footprint_offset,
                 "Support footprint offset",
             ),
+            contact_depth=contact_depth,
             build_plate_z=(
                 None
                 if build_plate_text.lower() in {"", "auto"}
@@ -4212,6 +4225,7 @@ class WorkbenchMainWindow:
             float(options.pitch),
             float(options.thickness),
             float(options.footprint_offset),
+            float(options.contact_depth),
             options.build_plate_z,
         )
 
@@ -4224,7 +4238,11 @@ class WorkbenchMainWindow:
     def _generated_support_preview_stl_path(self) -> Path:
         import tempfile
 
-        return Path(tempfile.gettempdir()) / "virtual_pbf_workbench" / "active_generated_support.stl"
+        return (
+            Path(tempfile.gettempdir())
+            / "virtual_pbf_workbench"
+            / "active_generated_support.stl"
+        )
 
     def _current_generated_support_signature_and_options(self):
         if self._part_type.currentText() != "Part & Support":
@@ -4386,8 +4404,9 @@ class WorkbenchMainWindow:
             return
 
         self._append_log(
-            f"Generating support preview "
-            f"({options.support_type}, overhang <= {options.overhang_angle:g} deg)"
+            "Generating support preview "
+            f"({options.support_type}, overhang <= {options.overhang_angle:g} deg, "
+            f"contact overlap {options.contact_depth:g} mm)"
         )
         self._set_busy(True, "Generating support...", task="support_generation")
         worker = _GeneratedSupportWorker(
@@ -4448,6 +4467,8 @@ class WorkbenchMainWindow:
         self._last_generated_support_type = None
         self._last_generated_support_signature = None
         self._last_generated_support_options = None
+        if hasattr(self, "_save_support_button"):
+            self._save_support_button.setEnabled(False)
         self._set_busy(False, "Support generation failed")
         self._append_log(f"Support generation failed: {message}")
         self._QMessageBox.critical(self._window, "Support generation failed", message)
@@ -4470,7 +4491,10 @@ class WorkbenchMainWindow:
                 getattr(self, "_last_generated_support_options", None)
                 or self._support_generation_from_form()
             )
-            support_type = getattr(self, "_last_generated_support_type", None) or options.support_type
+            support_type = (
+                getattr(self, "_last_generated_support_type", None)
+                or options.support_type
+            )
             if support_type == "X surface support":
                 write_surface_stl(
                     output_path,
@@ -5713,7 +5737,7 @@ class WorkbenchMainWindow:
             )
             self._generate_support_button.setEnabled(can_generate_support)
             self._generate_support_button.setText(
-                "Generating..." if busy and task == "support_generation" else "Generate Support"
+                "Generating..." if busy and task == "support_generation" else "Generate"
             )
         if hasattr(self, "_clear_support_button"):
             self._clear_support_button.setEnabled(
@@ -5728,12 +5752,14 @@ class WorkbenchMainWindow:
             )
             self._save_support_button.setEnabled(can_save_support)
             self._save_support_button.setText(
-                "Saving..." if busy and task == "support_save" else "Save Support STL"
+                "Saving..." if busy and task == "support_save" else "Save STL"
             )
         self._run_button.setEnabled((not busy) and self._last_voxel_grid is not None)
         self._preview_result_button.setEnabled((not busy) and self._last_result is not None)
         if hasattr(self, "_save_voxel_grid_button"):
-            self._save_voxel_grid_button.setEnabled((not busy) and self._last_voxel_grid is not None)
+            self._save_voxel_grid_button.setEnabled(
+                (not busy) and self._last_voxel_grid is not None
+            )
             self._save_voxel_grid_button.setText(
                 "Saving..." if busy and task == "voxel_save" else "Save Voxel Grid"
             )
@@ -5836,6 +5862,7 @@ class WorkbenchMainWindow:
                 float(support_generation.pitch),
                 float(support_generation.thickness),
                 float(support_generation.footprint_offset),
+                float(support_generation.contact_depth),
                 support_generation.build_plate_z,
             )
         return (
@@ -5980,7 +6007,8 @@ class WorkbenchMainWindow:
                 f"{support_generation.support_type}, "
                 f"overhang <= {support_generation.overhang_angle:g} deg, "
                 f"pitch {support_generation.pitch:g} mm, "
-                f"thickness {support_generation.thickness:g} mm"
+                f"thickness {support_generation.thickness:g} mm, "
+                f"contact overlap {support_generation.contact_depth:g} mm"
             )
         self._append_log(f"Output directory: {config.output_dir}")
         self._append_log(f"Voxel spacing: {config.voxel_spacing:g} mm")

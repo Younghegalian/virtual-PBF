@@ -228,8 +228,15 @@ def generate_overhang_support_grid(
     _report_progress(progress_callback, 66, "Building support lattice")
     xy_top = _filter_support_footprint(top_z, params, spacing)
     xy_start = _support_start_indices(xy_top, part_mask, base_z)
-    support_data = _extrude_support_spans(xy_start, xy_top, support_shape)
-    support_data &= ~part_mask
+    xy_top_with_contact = _apply_support_contact_depth(
+        xy_top,
+        params.contact_depth,
+        spacing,
+        support_shape[2],
+    )
+    support_data = _extrude_support_spans(xy_start, xy_top_with_contact, support_shape)
+    if params.contact_depth <= 0:
+        support_data &= ~part_mask
     _report_progress(progress_callback, 100, "Generated support voxelization complete")
     return VoxelGrid(
         data=support_data,
@@ -545,6 +552,21 @@ def _filter_support_footprint(
         return filtered
 
     return top_z
+
+
+def _apply_support_contact_depth(
+    top_z: np.ndarray,
+    contact_depth: float,
+    spacing: float,
+    z_size: int,
+) -> np.ndarray:
+    if contact_depth <= 0:
+        return top_z
+    contact_cells = max(1, int(np.ceil(float(contact_depth) / float(spacing))))
+    extended = top_z.copy()
+    valid = extended >= 0
+    extended[valid] = np.minimum(extended[valid] + contact_cells, int(z_size))
+    return extended
 
 
 def _x_surface_lattice_pattern(footprint: np.ndarray, pitch_cells: int) -> np.ndarray:
