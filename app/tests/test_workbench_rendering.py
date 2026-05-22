@@ -8,16 +8,13 @@ from capp.workbench.app import (
     WorkbenchMainWindow,
     _default_machine_preset_library_root,
     _legacy_model_calibration_root,
-    _load_generated_support_grid_cache,
     _machine_map_preset_output_dir,
     _machine_preset_folder,
     _model_calibration_preset_output_dir,
-    _orientation_label,
     _oriented_geometry_path,
     _roi_outline_rgb,
     _roi_overlay_rgb,
     _workbench_colormap,
-    _write_generated_support_grid_cache,
 )
 from capp.workbench.preview import PreviewPane
 
@@ -190,8 +187,8 @@ def test_oriented_geometry_path_exports_rotated_stl(tmp_path):
     loaded = trimesh.load_mesh(oriented, process=False)
 
     assert oriented != source.resolve()
-    assert oriented.parent.name == "oriented_geometry"
-    assert _orientation_label((90.0, 0.0, 0.0)) in oriented.name
+    assert oriented.parent.name == "intermediate"
+    assert oriented.name == "active_oriented_geometry.stl"
     assert np.allclose(loaded.extents, (2.0, 6.0, 4.0))
 
 
@@ -490,45 +487,6 @@ def test_cached_generated_support_grid_is_reused_for_matching_config(tmp_path):
     view._last_generated_support_grid = grid
 
     assert view._cached_generated_support_grid_for_config(config) is grid
-
-
-def test_cached_generated_support_grid_can_load_sidecar_cache(tmp_path):
-    support = tmp_path / "support.stl"
-    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
-    data = np.zeros((2, 2, 2), dtype=bool)
-    data[0, 1, 1] = True
-    grid = VoxelGrid(data, spacing=0.25, origin=(1.0, 2.0, 3.0), support_mask=data)
-    _write_generated_support_grid_cache(support, grid, "X surface support")
-    config = type(
-        "ConfigProbe",
-        (),
-        {"support_geometry_path": support, "voxel_spacing": 0.25},
-    )()
-    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
-    view._last_generated_support_path = None
-    view._last_generated_support_grid = None
-    view._last_generated_support_type = None
-
-    loaded = view._cached_generated_support_grid_for_config(config)
-
-    assert loaded is not None
-    assert loaded.filled_count == 1
-    assert loaded.origin == (1.0, 2.0, 3.0)
-    assert view._last_generated_support_type == "X surface support"
-
-
-def test_generated_support_cache_round_trips_type_and_grid(tmp_path):
-    support = tmp_path / "support.stl"
-    data = np.ones((1, 2, 1), dtype=bool)
-    grid = VoxelGrid(data, spacing=0.5, origin=(0.5, 0.0, -1.0), support_mask=data)
-
-    _write_generated_support_grid_cache(support, grid, "Column support")
-    loaded, support_type = _load_generated_support_grid_cache(support)
-
-    assert support_type == "Column support"
-    assert loaded is not None
-    assert np.array_equal(loaded.data, data)
-    assert loaded.origin == (0.5, 0.0, -1.0)
 
 
 def test_support_overlay_downsampling_preserves_thin_features():

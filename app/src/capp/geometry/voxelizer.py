@@ -166,7 +166,6 @@ def generate_overhang_support_grid(
     part_contacts_bed = bed_contact_z > requested_build_plate_z + 1e-9
     if part_contacts_bed:
         base_z = max(base_z, _z_index_at_or_above(support_origin, spacing, bed_contact_z))
-    build_plate_z = support_origin[2] + base_z * spacing
     _report_progress(progress_callback, 12, "Finding overhang faces")
     triangles = _overhang_triangles(
         mesh,
@@ -333,11 +332,19 @@ def voxelize_surface_shell(
     iterations = max(0, int(np.ceil(shell_thickness / float(spacing))) - 1)
     if iterations > 0:
         _report_progress(progress_callback, 88, "Thickening line support")
-        data = ndimage.binary_dilation(data, structure=np.ones((3, 3, 3), dtype=bool), iterations=iterations)
+        data = ndimage.binary_dilation(
+            data,
+            structure=np.ones((3, 3, 3), dtype=bool),
+            iterations=iterations,
+        )
     else:
         _report_progress(progress_callback, 88, "Keeping line support as a thin surface")
     _report_progress(progress_callback, 100, "Line support voxelization complete")
-    return VoxelGrid(data=data, spacing=float(spacing), origin=tuple(float(value) for value in origin))
+    return VoxelGrid(
+        data=data,
+        spacing=float(spacing),
+        origin=tuple(float(value) for value in origin),
+    )
 
 
 def _support_labeled_grid(grid: VoxelGrid) -> VoxelGrid:
@@ -375,7 +382,11 @@ def _support_grid_frame(
 ) -> tuple[tuple[int, int, int], np.ndarray, int]:
     spacing = float(part_grid.spacing)
     part_origin = np.asarray(part_grid.origin, dtype=np.float64)
-    build_plate_z = part_origin[2] if options.build_plate_z is None else float(options.build_plate_z)
+    build_plate_z = (
+        part_origin[2]
+        if options.build_plate_z is None
+        else float(options.build_plate_z)
+    )
     support_origin = part_origin.copy()
     if build_plate_z < part_origin[2]:
         lower_cells = int(np.ceil((part_origin[2] - build_plate_z) / spacing))
@@ -510,29 +521,23 @@ def _filter_support_footprint(
         return top_z
 
     pitch_cells = max(1, int(round(float(options.pitch) / spacing)))
-    x_index, y_index = np.indices(top_z.shape)
     footprint = top_z >= 0
 
     if mode == "x surface support":
-        thickness_cells = 1
-        pattern = (
-            ((x_index + y_index) % pitch_cells) < thickness_cells
-        ) | (((x_index - y_index) % pitch_cells) < thickness_cells)
+        pattern = _x_surface_lattice_pattern(footprint, pitch_cells)
         filtered = np.where(footprint & pattern, top_z, -1)
         if np.any(filtered >= 0):
             return filtered
         return top_z
 
     if mode == "column support":
-        anchor = footprint & ((x_index % pitch_cells) == 0) & ((y_index % pitch_cells) == 0)
-        if not np.any(anchor):
-            anchor = footprint
+        anchor = _column_lattice_pattern(footprint, pitch_cells)
         filtered = np.where(anchor, top_z, -1)
-        radius = max(0, int(np.ceil((float(options.thickness) * 0.5) / spacing)) - 1)
+        radius = max(0, int(np.floor((float(options.thickness) * 0.5) / spacing)))
         if radius > 0:
             filtered = ndimage.grey_dilation(
                 filtered,
-                size=(radius * 2 + 1, radius * 2 + 1),
+                footprint=_disk_footprint(radius),
                 mode="constant",
                 cval=-1,
             )
@@ -540,6 +545,89 @@ def _filter_support_footprint(
         return filtered
 
     return top_z
+
+
+def _x_surface_lattice_pattern(footprint: np.ndarray, pitch_cells: int) -> np.ndarray:
+    footprint = np.asarray(footprint, dtype=bool)
+    pattern = np.zeros_like(footprint, dtype=bool)
+    labels, count = ndimage.label(footprint)
+    if count == 0:
+        return pattern
+
+    period = max(1, int(round(float(pitch_cells) * np.sqrt(2.0))))
+    x_index, y_index = np.indices(footprint.shape)
+    for label in range(1, count + 1):
+        component = labels == label
+        coords = np.argwhere(component)
+        if coords.size == 0:
+            continue
+        center = np.rint((coords.min(axis=0) + coords.max(axis=0)) * 0.5).astype(np.int32)
+        positive = (x_index + y_index) - int(center[0] + center[1])
+        negative = (x_index - y_index) - int(center[0] - center[1])
+        component_pattern = _on_centered_lattice(positive, period) | _on_centered_lattice(
+            negative,
+            period,
+        )
+        pattern |= component & component_pattern
+    return pattern
+
+
+def _column_lattice_pattern(footprint: np.ndarray, pitch_cells: int) -> np.ndarray:
+    footprint = np.asarray(footprint, dtype=bool)
+    anchors = np.zeros_like(footprint, dtype=bool)
+    labels, count = ndimage.label(footprint)
+    if count == 0:
+        return anchors
+
+    for label in range(1, count + 1):
+        component = labels == label
+        coords = np.argwhere(component)
+        if coords.size == 0:
+            continue
+        lower = coords.min(axis=0)
+        upper = coords.max(axis=0)
+        x_positions = _centered_lattice_positions(int(lower[0]), int(upper[0]), pitch_cells)
+        y_positions = _centered_lattice_positions(int(lower[1]), int(upper[1]), pitch_cells)
+        local = np.zeros_like(footprint, dtype=bool)
+        local[np.ix_(x_positions, y_positions)] = True
+        local &= component
+        if not np.any(local):
+            center = (lower + upper) * 0.5
+            nearest = coords[np.argmin(np.sum((coords - center) ** 2, axis=1))]
+            local[int(nearest[0]), int(nearest[1])] = True
+        anchors |= local
+    return anchors
+
+
+def _centered_lattice_positions(lower: int, upper: int, pitch_cells: int) -> np.ndarray:
+    if upper < lower:
+        return np.asarray([], dtype=np.int32)
+    if pitch_cells <= 1:
+        return np.arange(lower, upper + 1, dtype=np.int32)
+
+    span = int(upper - lower)
+    count = max(1, int(np.floor(span / pitch_cells)) + 1)
+    total = (count - 1) * int(pitch_cells)
+    start = int(round((lower + upper - total) * 0.5))
+    positions = start + np.arange(count, dtype=np.int32) * int(pitch_cells)
+    positions = positions[(positions >= lower) & (positions <= upper)]
+    if positions.size == 0:
+        positions = np.asarray([int(round((lower + upper) * 0.5))], dtype=np.int32)
+    return positions
+
+
+def _on_centered_lattice(values: np.ndarray, period: int) -> np.ndarray:
+    if period <= 1:
+        return np.ones_like(values, dtype=bool)
+    remainder = np.mod(values, int(period))
+    distance = np.minimum(remainder, int(period) - remainder)
+    return distance == 0
+
+
+def _disk_footprint(radius: int) -> np.ndarray:
+    axis = np.arange(-int(radius), int(radius) + 1)
+    x_grid, y_grid = np.meshgrid(axis, axis, indexing="ij")
+    return (x_grid**2 + y_grid**2) <= int(radius) ** 2
 
 
 def _support_start_indices(
@@ -752,7 +840,11 @@ def _mark_triangle_samples(
         for j in range(divisions + 1 - i):
             a = i / divisions
             b = j / divisions
-            points.append(triangle[0] + a * (triangle[1] - triangle[0]) + b * (triangle[2] - triangle[0]))
+            points.append(
+                triangle[0]
+                + a * (triangle[1] - triangle[0])
+                + b * (triangle[2] - triangle[0])
+            )
     _mark_points_in_grid(data, np.asarray(points, dtype=np.float64), origin, spacing)
 
 

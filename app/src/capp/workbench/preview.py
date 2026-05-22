@@ -179,7 +179,7 @@ def _polydata_payload(mesh) -> PolyDataPayload:
         faces=np.asarray(mesh.faces, dtype=np.int64).copy(),
         point_data={
             name: np.asarray(mesh.point_data[name]).copy()
-            for name in mesh.point_data.keys()
+            for name in mesh.point_data
         },
     )
 
@@ -248,7 +248,10 @@ def _deviation_color_values_mm(
     return values.astype(np.float32)
 
 
-def _deviation_color_limits(metrics: dict[str, float], fallback_scale: float) -> tuple[float, float]:
+def _deviation_color_limits(
+    metrics: dict[str, float],
+    fallback_scale: float,
+) -> tuple[float, float]:
     scale = DEVIATION_HEATMAP_SCALE_MM
     return -scale, scale
 
@@ -402,12 +405,8 @@ class PreviewPane:
             plotter.add_axes()
             self._set_cad_camera(plotter, mesh.bounds)
             self._render_plotter(plotter)
-            suffix = ""
-            if original_cells is not None and original_cells > mesh.n_cells:
-                suffix = f" ({mesh.n_cells:,}/{original_cells:,} cells)"
-            if display_mode == "Overhang angle":
-                suffix = f"{suffix} overhang 0-{overhang_limit:g} deg"
-            self._title.setText(f"STL Preview: {Path(path).name}{suffix}")
+            title = "CAD Overhang" if display_mode == "Overhang angle" else "CAD Preview"
+            self._title.setText(title)
         except Exception as exc:
             self.show_message(f"STL preview failed: {exc}")
 
@@ -455,21 +454,8 @@ class PreviewPane:
             plotter.add_axes()
             self._set_cad_camera(plotter, _combined_mesh_bounds(part_mesh, support_mesh))
             self._render_plotter(plotter)
-            part_suffix = f"{part_mesh.n_cells:,}/{part_cells:,}" if part_cells else f"{part_mesh.n_cells:,}"
-            support_suffix = (
-                f"{support_mesh.n_cells:,}/{support_cells:,}"
-                if support_cells
-                else f"{support_mesh.n_cells:,}"
-            )
-            display_suffix = (
-                f", overhang 0-{overhang_limit:g} deg"
-                if display_mode == "Overhang angle"
-                else ""
-            )
-            self._title.setText(
-                f"CAD + Support: {Path(part_path).name} + {Path(support_path).name} "
-                f"(cells {part_suffix}, support {support_suffix}{display_suffix})"
-            )
+            title = "CAD + Support Overhang" if display_mode == "Overhang angle" else "CAD + Support"
+            self._title.setText(title)
             self._status.setText("")
         except Exception as exc:
             self.show_message(f"Support overlay preview failed: {exc}")
@@ -610,28 +596,11 @@ class PreviewPane:
                 _combined_mesh_bounds(preview.original_mesh, preview.deviation_surface),
             )
             self._render_plotter(plotter)
-            suffix = f" stride x{preview.stride}" if preview.stride > 1 else ""
-            if (
-                preview.original_cells
-                and preview.original_cells > preview.original_mesh.n_cells
-            ):
-                suffix = (
-                    f"{suffix} STL {preview.original_mesh.n_cells:,}/"
-                    f"{preview.original_cells:,} cells"
-                )
-            if max(abs(value) for value in preview.alignment_offset) > 1e-9:
-                offset = preview.alignment_offset
-                suffix = f"{suffix} aligned {offset[0]:.4g}, {offset[1]:.4g}, {offset[2]:.4g} mm"
-            suffix = (
-                f"{suffix} scale -{DEVIATION_HEATMAP_SCALE_MM:g}/"
-                f"+{DEVIATION_HEATMAP_SCALE_MM:g} mm"
+            self._title.setText("Geometry Deviation")
+            self._status.setText(
+                f"Mean |d| {metrics['mean_abs_mm']:.4g} mm, "
+                f"p95 {metrics['p95_abs_mm']:.4g} mm"
             )
-            self._title.setText(
-                "Geometry Deviation: "
-                f"mean |d| {metrics['mean_abs_mm']:.4g} mm, "
-                f"p95 {metrics['p95_abs_mm']:.4g} mm{suffix}"
-            )
-            self._status.setText("")
         except Exception as exc:
             self.show_message(f"Geometry deviation preview failed: {exc}")
             raise
@@ -783,16 +752,10 @@ class PreviewPane:
             self._set_cad_camera(plotter, grid.bounds)
             self._render_plotter(plotter)
 
-            total_stride = stride * block_stride
-            suffix = f" (safety stride x{total_stride})" if total_stride > 1 else ""
-            if fallback_stride > 1:
-                suffix = f"{suffix} point fallback 1/{fallback_stride}"
-            if volume_mapper:
-                suffix = f"{suffix} {volume_mapper}"
             mode = render_mode if render_mode != "Points" else "Point Preview"
             if has_support_overlay:
-                suffix = f"{suffix} support overlay"
-            self._title.setText(f"{mode}: {label}{suffix}")
+                mode = f"{mode} + Support"
+            self._title.setText(mode)
             self._status.setText("")
             return True
         except Exception as exc:
@@ -1037,7 +1000,11 @@ class PreviewPane:
         plotter.add_points(
             cloud,
             color=color,
-            point_size=point_size if point_size is not None else (2.6 if point_stride == 1 else 2.2),
+            point_size=(
+                point_size
+                if point_size is not None
+                else (2.6 if point_stride == 1 else 2.2)
+            ),
             opacity=0.72,
             render_points_as_spheres=False,
         )

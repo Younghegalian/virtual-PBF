@@ -141,19 +141,19 @@ def write_surface_stl(
             continue
         center_x = origin_array[0] + (float(x_index) + 0.5) * spacing_value
         center_y = origin_array[1] + (float(y_index) + 0.5) * spacing_value
-        direction = _surface_support_direction(array, int(x_index), int(y_index))
-        half_x = 0.5 * spacing_value * direction[0]
-        half_y = 0.5 * spacing_value * direction[1]
-        start = len(vertices)
-        vertices.extend(
-            [
-                (center_x - half_x, center_y - half_y, z_bottom),
-                (center_x + half_x, center_y + half_y, z_bottom),
-                (center_x + half_x, center_y + half_y, z_top),
-                (center_x - half_x, center_y - half_y, z_top),
-            ]
-        )
-        faces.extend([(start, start + 1, start + 2), (start, start + 2, start + 3)])
+        for direction in _surface_support_directions(array, int(x_index), int(y_index)):
+            half_x = 0.5 * spacing_value * direction[0]
+            half_y = 0.5 * spacing_value * direction[1]
+            start = len(vertices)
+            vertices.extend(
+                [
+                    (center_x - half_x, center_y - half_y, z_bottom),
+                    (center_x + half_x, center_y + half_y, z_bottom),
+                    (center_x + half_x, center_y + half_y, z_top),
+                    (center_x - half_x, center_y - half_y, z_top),
+                ]
+            )
+            faces.extend([(start, start + 1, start + 2), (start, start + 2, start + 3)])
 
     if not faces:
         _write_empty_stl(output_path)
@@ -165,7 +165,11 @@ def write_surface_stl(
     )
 
 
-def _surface_support_direction(array: NDArray[np.bool_], x_index: int, y_index: int) -> tuple[float, float]:
+def _surface_support_directions(
+    array: NDArray[np.bool_],
+    x_index: int,
+    y_index: int,
+) -> list[tuple[float, float]]:
     x_size, y_size = array.shape[:2]
 
     def occupied(x_offset: int, y_offset: int) -> bool:
@@ -178,11 +182,14 @@ def _surface_support_direction(array: NDArray[np.bool_], x_index: int, y_index: 
     positive = occupied(-1, -1) or occupied(1, 1)
     negative = occupied(-1, 1) or occupied(1, -1)
     inv_sqrt2 = 2.0**-0.5
-    if positive and not negative:
-        return (inv_sqrt2, inv_sqrt2)
-    if negative and not positive:
-        return (inv_sqrt2, -inv_sqrt2)
-    return (1.0, 0.0)
+    directions: list[tuple[float, float]] = []
+    if positive:
+        directions.append((inv_sqrt2, inv_sqrt2))
+    if negative:
+        directions.append((inv_sqrt2, -inv_sqrt2))
+    if not directions:
+        directions.append((1.0, 0.0))
+    return directions
 
 
 def _write_empty_stl(path: Path) -> None:

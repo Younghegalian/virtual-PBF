@@ -3,6 +3,8 @@ import trimesh
 
 from capp.domain import SupportGenerationParameters
 from capp.geometry.voxelizer import (
+    _column_lattice_pattern,
+    _x_surface_lattice_pattern,
     generate_overhang_support_grid,
     union_voxel_grids,
     voxelize_mesh,
@@ -222,6 +224,27 @@ def test_generated_support_modes_shape_lattice_density(tmp_path):
     assert volume.filled_count >= x_surface.filled_count >= column.filled_count > 0
 
 
+def test_column_support_lattice_is_centered_and_uniform():
+    footprint = np.ones((12, 12), dtype=bool)
+
+    anchors = _column_lattice_pattern(footprint, pitch_cells=4)
+
+    occupied = np.argwhere(anchors)
+    assert occupied.size > 0
+    assert np.array_equal(np.unique(occupied[:, 0]), np.asarray([2, 6, 10]))
+    assert np.array_equal(np.unique(occupied[:, 1]), np.asarray([2, 6, 10]))
+
+
+def test_x_surface_lattice_is_centered_on_component():
+    footprint = np.ones((9, 9), dtype=bool)
+
+    pattern = _x_surface_lattice_pattern(footprint, pitch_cells=3)
+
+    assert pattern[4, 4]
+    assert pattern.sum() < footprint.sum()
+    assert np.array_equal(pattern, np.flipud(np.fliplr(pattern)))
+
+
 def test_part_and_generated_support_voxelization_unions_inputs(tmp_path):
     part_path = _box_stl(tmp_path, "generated_support_part", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
     part = voxelize_mesh(part_path, spacing=1.0)
@@ -334,7 +357,7 @@ def test_footprint_offset_does_not_leave_floating_support_segments(tmp_path):
         for x_index, y_index in occupied_xy
     ]
     base_z = min(column_bottoms)
-    for (x_index, y_index), bottom_z in zip(occupied_xy, column_bottoms):
+    for (x_index, y_index), bottom_z in zip(occupied_xy, column_bottoms, strict=True):
         assert bottom_z == base_z or part.data[x_index, y_index, bottom_z - 1]
 
 
@@ -369,7 +392,11 @@ def test_overhang_support_can_anchor_to_lower_part_surface(tmp_path):
     anchored = occupied_xy[column_bottoms > 0]
 
     assert anchored.size > 0
-    for (x_index, y_index), bottom_z in zip(anchored, column_bottoms[column_bottoms > 0]):
+    for (x_index, y_index), bottom_z in zip(
+        anchored,
+        column_bottoms[column_bottoms > 0],
+        strict=True,
+    ):
         assert part.data[x_index, y_index, bottom_z - 1]
 
 
@@ -453,6 +480,18 @@ def test_x_surface_support_can_be_exported_as_open_surface_stl(tmp_path):
     assert output_path.exists()
     assert len(loaded.faces) > 0
     assert np.isclose(float(loaded.vertices[:, 2].min()), 0.0)
+
+
+def test_x_surface_export_keeps_both_diagonals_at_intersection(tmp_path):
+    volume = np.zeros((3, 3, 2), dtype=bool)
+    for x_index, y_index in [(0, 0), (1, 1), (2, 2), (0, 2), (2, 0)]:
+        volume[x_index, y_index, :] = True
+    output_path = tmp_path / "x_intersection_surface.stl"
+
+    write_surface_stl(output_path, volume, spacing=1.0, origin=(0.0, 0.0, 0.0))
+
+    loaded = trimesh.load_mesh(output_path, process=False)
+    assert len(loaded.faces) == 12
 
 
 def _box_stl(tmp_path, name, extents, translation):

@@ -842,7 +842,11 @@ def _candidate_key(candidate: ModelCalibrationParameterSet) -> tuple[float, ...]
 
 
 def _candidate_loss(evaluations: list[ModelCalibrationEvaluation]) -> float:
-    losses = [evaluation.loss.total for evaluation in evaluations if np.isfinite(evaluation.loss.total)]
+    losses = [
+        evaluation.loss.total
+        for evaluation in evaluations
+        if np.isfinite(evaluation.loss.total)
+    ]
     if not losses:
         return float("inf")
     return float(np.mean(losses))
