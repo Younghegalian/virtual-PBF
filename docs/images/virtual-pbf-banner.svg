@@ -1,114 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
-  <title id="title">Virtual PBF Workbench banner</title>
-  <desc id="desc">A professional banner for an empirical support-aware virtual PBF voxel probability workbench.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Virtual PBF Workbench icon banner">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="0.52" stop-color="#172033"/>
-      <stop offset="1" stop-color="#263446"/>
-    </linearGradient>
-    <linearGradient id="pbfIconBg" x1="42" y1="22" x2="218" y2="232" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="120" y1="22" x2="1110" y2="356" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#0f172a"/>
       <stop offset="0.58" stop-color="#1e3a5f"/>
       <stop offset="1" stop-color="#0b7285"/>
     </linearGradient>
-    <linearGradient id="pbfIconMelt" x1="82" y1="142" x2="184" y2="195" gradientUnits="userSpaceOnUse">
+    <linearGradient id="melt" x1="420" y1="204" x2="910" y2="300" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#fbbf24"/>
       <stop offset="0.55" stop-color="#f97316"/>
       <stop offset="1" stop-color="#ef4444"/>
     </linearGradient>
-    <linearGradient id="pbfIconCubeTop" x1="82" y1="62" x2="176" y2="122" gradientUnits="userSpaceOnUse">
+    <linearGradient id="cubeTop" x1="420" y1="64" x2="790" y2="168" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#e0f2fe"/>
       <stop offset="1" stop-color="#38bdf8"/>
     </linearGradient>
-    <linearGradient id="pbfIconCubeSide" x1="122" y1="98" x2="190" y2="158" gradientUnits="userSpaceOnUse">
+    <linearGradient id="cubeSide" x1="612" y1="140" x2="920" y2="244" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#22d3ee"/>
       <stop offset="1" stop-color="#2563eb"/>
     </linearGradient>
-    <linearGradient id="heat" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#2563eb"/>
-      <stop offset="0.35" stop-color="#22c55e"/>
-      <stop offset="0.68" stop-color="#facc15"/>
-      <stop offset="1" stop-color="#ef4444"/>
+    <linearGradient id="meltSoft" x1="0" y1="260" x2="1280" y2="316" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0"/>
+      <stop offset="0.18" stop-color="#fbbf24" stop-opacity="0.48"/>
+      <stop offset="0.52" stop-color="#f97316" stop-opacity="0.58"/>
+      <stop offset="0.82" stop-color="#ef4444" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ef4444" stop-opacity="0"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#020617" flood-opacity="0.35"/>
+    <radialGradient id="glow" cx="50%" cy="48%" r="54%">
+      <stop offset="0" stop-color="#7dd3fc" stop-opacity="0.35"/>
+      <stop offset="0.42" stop-color="#0ea5e9" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#020617" flood-opacity="0.38"/>
     </filter>
-    <filter id="pbfIconSoftShadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#020617" flood-opacity="0.38"/>
+    <filter id="wideShadow" x="-20%" y="-80%" width="140%" height="260%">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#020617" flood-opacity="0.35"/>
     </filter>
-    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
-      <path d="M34 0H0V34" fill="none" stroke="#94a3b8" stroke-opacity="0.12" stroke-width="1"/>
-    </pattern>
-    <style>
-      .title { font-family: Segoe UI, Inter, Arial, sans-serif; font-size: 54px; font-weight: 750; fill: #f8fafc; letter-spacing: 0; }
-      .subtitle { font-family: Segoe UI, Inter, Arial, sans-serif; font-size: 22px; font-weight: 500; fill: #cbd5e1; letter-spacing: 0; }
-      .label { font-family: Segoe UI, Inter, Arial, sans-serif; font-size: 17px; font-weight: 650; fill: #e2e8f0; letter-spacing: 0; }
-      .small { font-family: Segoe UI, Inter, Arial, sans-serif; font-size: 14px; font-weight: 500; fill: #94a3b8; letter-spacing: 0; }
-      .math { font-family: Consolas, Menlo, monospace; font-size: 18px; font-weight: 600; fill: #bae6fd; letter-spacing: 0; }
-    </style>
   </defs>
 
-  <rect width="1280" height="360" fill="url(#bg)"/>
-  <rect width="1280" height="360" fill="url(#grid)"/>
+  <rect width="1280" height="360" rx="42" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="42" fill="url(#glow)"/>
 
-  <path d="M0 286C133 243 229 306 358 260C508 206 564 102 740 125C897 145 1015 236 1280 153V360H0Z" fill="#0ea5e9" opacity="0.1"/>
-  <path d="M0 318C138 291 237 334 388 299C528 267 625 188 788 205C951 221 1075 286 1280 235V360H0Z" fill="#f97316" opacity="0.1"/>
+  <path d="M0 260C146 218 250 292 384 244C530 191 606 135 780 158C930 178 1042 254 1280 185V360H0Z" fill="#0f172a" opacity="0.22"/>
+  <path d="M0 305C184 260 287 326 463 285C638 244 733 214 916 242C1051 263 1133 305 1280 276V360H0Z" fill="#020617" opacity="0.22"/>
 
-  <g transform="translate(72 52) scale(0.96875)" filter="url(#shadow)">
-    <rect width="256" height="256" rx="54" fill="url(#pbfIconBg)"/>
-    <g filter="url(#pbfIconSoftShadow)">
-      <path d="M63 155c0-16 30-29 67-29s67 13 67 29-30 29-67 29-67-13-67-29z" fill="#0f172a" opacity="0.35"/>
-      <path d="M58 166c15-16 37-25 66-25 31 0 57 11 74 27-11 25-36 43-69 43-32 0-59-18-71-45z" fill="url(#pbfIconMelt)"/>
-      <path d="M75 164c11-8 29-14 52-14 25 0 46 7 59 17-10 14-30 24-57 24-26 0-46-10-54-27z" fill="#fed7aa" opacity="0.28"/>
-      <path d="M84 91l44-27 45 27-45 27-44-27z" fill="url(#pbfIconCubeTop)"/>
-      <path d="M84 91l44 27v54l-44-27V91z" fill="#0891b2"/>
-      <path d="M128 118l45-27v54l-45 27v-54z" fill="url(#pbfIconCubeSide)"/>
-      <path d="M96 116l20 12v26l-20-12v-26z" fill="#67e8f9" opacity="0.72"/>
-      <path d="M141 127l20-12v27l-20 12v-27z" fill="#bfdbfe" opacity="0.6"/>
-      <circle cx="113" cy="94" r="5" fill="#0f172a"/>
-      <circle cx="143" cy="94" r="5" fill="#0f172a"/>
-      <path d="M119 105c6 6 12 6 18 0" fill="none" stroke="#0f172a" stroke-width="5" stroke-linecap="round"/>
-      <path d="M187 63l6 14 14 6-14 6-6 14-6-14-14-6 14-6 6-14z" fill="#fef3c7"/>
-      <path d="M67 55l4 9 9 4-9 4-4 9-4-9-9-4 9-4 4-9z" fill="#bae6fd"/>
-    </g>
+  <g filter="url(#wideShadow)">
+    <path d="M226 250c0-57 180-103 402-103s402 46 402 103-180 103-402 103-402-46-402-103z" fill="#0f172a" opacity="0.35"/>
+    <path d="M96 287c116-74 280-111 493-111 230 0 424 46 550 122-82 40-261 64-504 64-247 0-440-28-539-75z" fill="url(#meltSoft)"/>
   </g>
 
-  <g transform="translate(366 82)">
-    <text class="title" x="0" y="0" dominant-baseline="hanging">Virtual PBF Workbench</text>
-    <text class="subtitle" x="2" y="76" dominant-baseline="hanging">Empirical, support-aware virtual powder bed fusion simulation</text>
+  <g transform="translate(370 35)" filter="url(#softShadow)">
+    <path d="M0 224c91-52 224-82 400-82 188 0 346 38 449 91-67 70-219 112-429 112-204 0-366-44-420-121z" fill="url(#melt)"/>
+    <path d="M84 226c67-28 178-48 315-48 150 0 276 24 354 56-64 41-183 67-340 67-160 0-277-27-329-75z" fill="#fed7aa" opacity="0.28"/>
 
-    <g transform="translate(2 130)">
-      <rect x="0" y="0" width="184" height="42" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.55"/>
-      <text class="label" x="18" y="22" dominant-baseline="middle">Voxel lattice</text>
+    <path d="M165 91l266-82 271 82-271 82-266-82z" fill="url(#cubeTop)"/>
+    <path d="M165 91l266 82v150L165 242V91z" fill="#0891b2"/>
+    <path d="M431 173l271-82v151l-271 81V173z" fill="url(#cubeSide)"/>
 
-      <rect x="202" y="0" width="214" height="42" rx="8" fill="#0f172a" stroke="#22c55e" stroke-opacity="0.55"/>
-      <text class="label" x="220" y="22" dominant-baseline="middle">Layer-wise Markov field</text>
+    <path d="M237 166l121 37v72l-121-37v-72z" fill="#67e8f9" opacity="0.72"/>
+    <path d="M512 206l120-37v74l-120 37v-74z" fill="#bfdbfe" opacity="0.6"/>
 
-      <rect x="434" y="0" width="194" height="42" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-opacity="0.65"/>
-      <text class="label" x="452" y="22" dominant-baseline="middle">ROI calibration</text>
-
-      <rect x="646" y="0" width="188" height="42" rx="8" fill="#0f172a" stroke="#e879f9" stroke-opacity="0.55"/>
-      <text class="label" x="664" y="22" dominant-baseline="middle">Machine maps</text>
-    </g>
-
-    <text class="math" x="2" y="216">P(layer z) = f(neighbors, lower layer, IDP, bias) -> stochastic binary geometry</text>
-    <text class="small" x="2" y="248">Not FEM, thermal, melt-pool, fluid-flow, or residual-stress analysis.</text>
+    <circle cx="337" cy="99" r="18" fill="#0f172a"/>
+    <circle cx="519" cy="99" r="18" fill="#0f172a"/>
+    <path d="M373 132c37 25 73 25 110 0" fill="none" stroke="#0f172a" stroke-width="20" stroke-linecap="round"/>
   </g>
 
-  <g transform="translate(1014 72)">
-    <rect x="0" y="0" width="190" height="216" rx="18" fill="#0b1220" stroke="#475569"/>
-    <text class="small" x="24" y="34">Deviation scale</text>
-    <rect x="24" y="56" width="142" height="20" rx="10" fill="url(#heat)"/>
-    <text class="small" x="24" y="100">-1 mm</text>
-    <text class="small" x="116" y="100">+1 mm</text>
-    <g transform="translate(34 128)" opacity="0.9">
-      <rect x="0" y="32" width="16" height="34" fill="#38bdf8"/>
-      <rect x="24" y="18" width="16" height="48" fill="#22c55e"/>
-      <rect x="48" y="6" width="16" height="60" fill="#facc15"/>
-      <rect x="72" y="26" width="16" height="40" fill="#f97316"/>
-      <rect x="96" y="0" width="16" height="66" fill="#ef4444"/>
-    </g>
-    <text class="small" x="24" y="190">Probability volume</text>
-  </g>
+  <path d="M948 35l18 42 42 18-42 18-18 42-18-42-42-18 42-18 18-42z" fill="#fef3c7"/>
+  <path d="M232 56l14 31 31 14-31 14-14 31-14-31-31-14 31-14 14-31z" fill="#bae6fd"/>
+  <path d="M1058 205l10 23 23 10-23 10-10 23-10-23-23-10 23-10 10-23z" fill="#fde68a" opacity="0.9"/>
+  <path d="M166 210l8 18 18 8-18 8-8 18-8-18-18-8 18-8 8-18z" fill="#cffafe" opacity="0.85"/>
 </svg>
