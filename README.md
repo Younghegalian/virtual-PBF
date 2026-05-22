@@ -246,6 +246,11 @@ The test suite covers CLI behavior, voxelization, support handling, model calibr
 machine-map generation/application, backend validation, solver parity, and workbench UI
 helpers.
 
+## References
+
+- Lee, Seung Yeop, et al. "Rapid prediction of dross formation and surface roughness
+  using a stochastic CA model in L-PBF." *Engineering with Computers* 42.1 (2026): 29.
+
 ## License
 
 This project is released under the MIT License. See `LICENSE` for the full
