@@ -14,6 +14,7 @@ def save_npz(path: str | Path, result: SimulationResult) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_geometry = "" if result.source_geometry is None else str(result.source_geometry)
+    support_geometry = "" if result.support_geometry is None else str(result.support_geometry)
     np.savez_compressed(
         output_path,
         probability=result.probability,
@@ -24,6 +25,7 @@ def save_npz(path: str | Path, result: SimulationResult) -> None:
         rest_volume=np.array([result.rest_volume], dtype=np.float64),
         probability_density=np.array([result.probability_density], dtype=np.float64),
         source_geometry=np.array([source_geometry]),
+        support_geometry=np.array([support_geometry]),
         support_mask=result.support_mask.astype(bool, copy=False),
     )
 

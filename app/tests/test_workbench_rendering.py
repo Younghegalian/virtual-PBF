@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from capp.domain import VoxelGrid
+from capp.domain import SolverBackend, VoxelGrid
 from capp.workbench.app import (
     WorkbenchMainWindow,
     _default_machine_preset_library_root,
@@ -22,9 +22,13 @@ from capp.workbench.preview import PreviewPane
 class _ButtonProbe:
     def __init__(self):
         self.enabled = None
+        self.text = ""
 
     def setEnabled(self, enabled):
         self.enabled = bool(enabled)
+
+    def setText(self, text):
+        self.text = str(text)
 
 
 class _WidgetProbe(_ButtonProbe):
@@ -54,6 +58,17 @@ class _TextFieldProbe:
 
     def setEnabled(self, enabled):
         self.enabled = bool(enabled)
+
+
+class _SpinFieldProbe:
+    def __init__(self, value):
+        self._value = float(value)
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        self._value = float(value)
 
 
 class _ComboProbe:
@@ -105,13 +120,38 @@ class _PreviewProbe:
         self.stl_display_mode = _ComboProbe(mode)
         self.overhang_limit = _TextFieldProbe(overhang_limit)
         self.overlay_kwargs = None
+        self.voxel_args = None
         self.voxel_kwargs = None
 
     def show_stl_overlay_mesh(self, *args, **kwargs):
         self.overlay_kwargs = kwargs
 
     def show_voxels(self, *args, **kwargs):
+        self.voxel_args = args
         self.voxel_kwargs = kwargs
+
+
+class _SliderProbe:
+    def __init__(self):
+        self.minimum = None
+        self.maximum = None
+        self.current = 0
+        self.signals_blocked = False
+
+    def blockSignals(self, blocked):
+        self.signals_blocked = bool(blocked)
+
+    def setMinimum(self, value):
+        self.minimum = int(value)
+
+    def setMaximum(self, value):
+        self.maximum = int(value)
+
+    def setValue(self, value):
+        self.current = int(value)
+
+    def value(self):
+        return self.current
 
 
 def test_roi_overlay_rgb_preserves_array_orientation():
@@ -200,6 +240,30 @@ def test_oriented_geometry_path_returns_source_for_identity(tmp_path):
         _oriented_geometry_path(source, tmp_path / "out", (360.0, 0.0, 0.0))
         == source.resolve()
     )
+
+
+def test_geometry_orientation_angles_accept_spinbox_fields():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._orientation_fields = [
+        _SpinFieldProbe(190.0),
+        _SpinFieldProbe(-190.0),
+        _SpinFieldProbe(0.0),
+    ]
+
+    assert view._geometry_orientation_angles() == (-170.0, 170.0, 0.0)
+
+
+def test_set_geometry_orientation_angles_updates_spinbox_fields():
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._orientation_fields = [
+        _SpinFieldProbe(0.0),
+        _SpinFieldProbe(0.0),
+        _SpinFieldProbe(0.0),
+    ]
+
+    view._set_geometry_orientation_angles((270.0, -270.0, 45.0))
+
+    assert [field.value() for field in view._orientation_fields] == [-90.0, 90.0, 45.0]
 
 
 def test_geometry_deviation_button_updates_after_result_sync(tmp_path):
@@ -292,6 +356,7 @@ def test_geometry_deviation_volume_always_removes_support_mask():
 def test_current_result_for_save_can_remove_support_mask():
     support_mask = np.zeros((2, 2, 2), dtype=bool)
     support_mask[0, 0, 0] = True
+    support_geometry = Path("support.stl")
     view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
     view._last_result = None
     view._loaded_result = {
@@ -305,6 +370,7 @@ def test_current_result_for_save_can_remove_support_mask():
         "probability_density": 100.0,
         "elapsed_seconds": 1.0,
         "source_geometry": None,
+        "support_geometry": support_geometry,
     }
     view._result_hide_support = _CheckProbe(checked=True)
 
@@ -314,6 +380,76 @@ def test_current_result_for_save_can_remove_support_mask():
     assert not result.binary[0, 0, 0]
     assert result.probability[0, 0, 0] == 0
     assert result.support_mask.sum() == 0
+    assert result.support_geometry is None
+
+
+def test_preview_loaded_result_shows_updating_and_support_overlay(tmp_path):
+    support_mask = np.zeros((2, 2, 2), dtype=bool)
+    support_mask[0, 0, 0] = True
+    support_geometry = tmp_path / "support.stl"
+    support_geometry.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    binary = np.ones((2, 2, 2), dtype=bool)
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._loaded_result = {
+        "binary": binary,
+        "probability": np.full((2, 2, 2), 100, dtype=np.uint8),
+        "voxel": binary,
+        "support_mask": support_mask,
+        "spacing": 1.0,
+        "origin": (0.0, 0.0, 0.0),
+        "support_geometry": support_geometry,
+    }
+    view._result_revision = 7
+    view._result_volume_choice = _ComboProbe("Binary")
+    view._result_hide_support = _CheckProbe(checked=False)
+    view._result_preview = _PreviewProbe()
+    view._append_log = lambda _message: None
+    updates = []
+    view._set_result_preview_updating = lambda updating: updates.append(bool(updating))
+
+    view._preview_loaded_result(show_error=False)
+
+    assert updates == [True, False]
+    assert np.array_equal(view._result_preview.voxel_args[0], binary)
+    assert np.array_equal(view._result_preview.voxel_kwargs["support_mask"], support_mask)
+    assert view._result_preview.voxel_kwargs["support_path"] == support_geometry
+    assert view._result_preview.voxel_kwargs["label"] == "Binary"
+    assert view._last_result_preview_signature == (7, "Binary", False)
+
+
+def test_refresh_result_views_updates_3d_preview_automatically():
+    support_mask = np.zeros((2, 2, 2), dtype=bool)
+    support_mask[0, 0, 0] = True
+    binary = np.ones((2, 2, 2), dtype=bool)
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._busy = False
+    view._loaded_result = {
+        "binary": binary,
+        "probability": np.full((2, 2, 2), 100, dtype=np.uint8),
+        "voxel": binary,
+        "support_mask": support_mask,
+        "spacing": 1.0,
+        "origin": (0.0, 0.0, 0.0),
+    }
+    view._result_revision = 1
+    view._result_volume_choice = _ComboProbe("Binary")
+    view._result_hide_support = _CheckProbe(checked=True)
+    view._result_display_preview_button = _ButtonProbe()
+    view._slice_axis = _ComboProbe("Z")
+    view._slice_slider = _SliderProbe()
+    view._result_preview = _PreviewProbe()
+    view._result_slice_source_image = None
+    view._append_log = lambda _message: None
+    updates = []
+    view._set_result_preview_updating = lambda updating: updates.append(bool(updating))
+
+    view._refresh_result_views()
+
+    assert updates == [True, False]
+    assert view._slice_slider.maximum == 1
+    assert not bool(view._result_preview.voxel_args[0][0, 0, 0])
+    assert view._result_preview.voxel_kwargs["support_mask"] is None
+    assert view._result_preview.voxel_kwargs["label"] == "Binary (support removed)"
 
 
 def test_support_overlay_uses_current_stl_display_settings():
@@ -473,7 +609,174 @@ def test_generated_support_path_uses_active_generation_options(tmp_path):
     assert view._generated_support_path_and_voxel_type() == (support, "Line support")
 
 
-def test_cached_generated_support_grid_is_reused_for_matching_config(tmp_path):
+def test_generated_support_stays_active_when_grid_spacing_changes(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("0.5")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("X surface support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = VoxelGrid(
+        np.ones((1, 1, 1), dtype=bool),
+        spacing=0.5,
+    )
+    view._last_generated_support_type = "X surface support"
+    options = view._support_generation_from_form()
+    view._last_generated_support_signature = view._support_generation_signature(
+        part,
+        0.5,
+        options,
+    )
+
+    view._grid_spacing = _TextFieldProbe("0.25")
+
+    assert view._active_generated_support_options() == options
+    assert view._generated_support_path_and_voxel_type() == (support, "Line support")
+
+
+def test_generated_support_snapshot_ignores_solver_fields(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("0.5")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = VoxelGrid(
+        np.ones((1, 1, 1), dtype=bool),
+        spacing=0.5,
+    )
+    options = view._support_generation_from_form()
+    snapshot = view._generated_support_dependency_snapshot(part, options)
+    view._last_generated_support_dependency_snapshot = snapshot
+    view._last_generated_support_signature = snapshot
+    view._last_generated_support_options = options
+
+    view._grid_spacing = _TextFieldProbe("0.2")
+    view._neighborhood = _ComboProbe("SimpleM")
+    view._coeff_current = _TextFieldProbe("999")
+    view._residual_avg = _TextFieldProbe("1E-9")
+
+    assert view._active_generated_support_options() == options
+
+
+def test_simulation_config_reuses_generated_support_after_solver_and_spacing_changes(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    output_dir = tmp_path / "out"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._output_dir = _TextFieldProbe(output_dir)
+    view._grid_spacing = _TextFieldProbe("0.2")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = VoxelGrid(
+        np.ones((1, 1, 1), dtype=bool),
+        spacing=0.5,
+    )
+    options = view._support_generation_from_form()
+    snapshot = view._generated_support_dependency_snapshot(part, options)
+    view._last_generated_support_dependency_snapshot = snapshot
+    view._last_generated_support_signature = snapshot
+    view._last_generated_support_options = options
+    view._last_generated_support_dirty = False
+    view._neighborhood = _ComboProbe("SimpleM")
+    view._coeff_x_neg = _TextFieldProbe("0.2")
+    view._coeff_x_pos = _TextFieldProbe("0.2")
+    view._coeff_y_neg = _TextFieldProbe("0.2")
+    view._coeff_y_pos = _TextFieldProbe("0.2")
+    view._coeff_current = _TextFieldProbe("0.07")
+    view._coeff_lower = _TextFieldProbe("1")
+    view._coeff_moore_l = _TextFieldProbe("0.125")
+    view._coeff_moore_cl = _TextFieldProbe("1")
+    view._residual_avg = _TextFieldProbe("1E-6")
+    view._residual_max = _TextFieldProbe("1E-5")
+    view._overwrap = _TextFieldProbe("0.1")
+    view._iteration_bound = _TextFieldProbe("500")
+    view._min_bias = _TextFieldProbe("0.05")
+    view._stochastic_mode = _ComboProbe("In-layer")
+    view._idp = _TextFieldProbe("0.3")
+    view._selected_machine_map_path = lambda: None
+    view._selected_solver_backend = lambda: SolverBackend.CUDA
+
+    config = view._simulation_config_from_form()
+
+    assert config.support_generation == options
+    assert config.support_geometry_path == support
+    assert config.voxel_spacing == 0.2
+    assert config.solver.backend == SolverBackend.CUDA
+
+
+def test_generated_support_snapshot_invalidates_on_support_settings_change(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("0.5")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("Volume support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = VoxelGrid(
+        np.ones((1, 1, 1), dtype=bool),
+        spacing=0.5,
+    )
+    options = view._support_generation_from_form()
+    snapshot = view._generated_support_dependency_snapshot(part, options)
+    view._last_generated_support_dependency_snapshot = snapshot
+    view._last_generated_support_signature = snapshot
+    view._last_generated_support_options = options
+
+    view._support_pitch = _TextFieldProbe("4.0")
+    view._last_generated_support_dirty = True
+
+    assert view._active_generated_support_options() is None
+
+
+def test_generated_support_stl_path_skips_cached_grid(tmp_path):
     support = tmp_path / "support.stl"
     support.write_text("solid support\nendsolid support\n", encoding="utf-8")
     grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
@@ -486,7 +789,204 @@ def test_cached_generated_support_grid_is_reused_for_matching_config(tmp_path):
     view._last_generated_support_path = support
     view._last_generated_support_grid = grid
 
+    assert view._cached_generated_support_grid_for_config(config) is None
+
+
+def test_generated_support_grid_cache_miss_on_spacing_change_keeps_support_path(tmp_path):
+    part = tmp_path / "part.stl"
+    support = tmp_path / "support.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    support.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("0.25")
+    view._support_type = _ComboProbe("Volume support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = support
+    view._last_generated_support_grid = grid
+    options = view._support_generation_from_form()
+    view._last_generated_support_signature = view._support_generation_signature(
+        part,
+        options,
+    )
+    logs = []
+    view._append_log = logs.append
+    config = type(
+        "ConfigProbe",
+        (),
+        {
+            "support_geometry_path": support,
+            "support_generation": options,
+            "voxel_spacing": 0.25,
+        },
+    )()
+
+    assert view._cached_generated_support_grid_for_config(config) is None
+    assert view._generated_support_path_and_voxel_type() == (support, "Volume support")
+    assert any("generated support STL" in message for message in logs)
+
+
+def test_generated_support_grid_can_be_reused_without_preview_stl(tmp_path):
+    part = tmp_path / "part.stl"
+    part.write_text("solid part\nendsolid part\n", encoding="utf-8")
+    grid = VoxelGrid(np.ones((1, 1, 1), dtype=bool), spacing=0.5)
+    view = WorkbenchMainWindow.__new__(WorkbenchMainWindow)
+    view._part_type = _ComboProbe("Part & Support")
+    view._support_source = _ComboProbe("Generate from overhang")
+    view._part_geometry = _TextFieldProbe(part)
+    view._grid_spacing = _TextFieldProbe("0.5")
+    view._support_geometry = _TextFieldProbe("")
+    view._support_type = _ComboProbe("X surface support")
+    view._support_overhang_angle = _TextFieldProbe("60")
+    view._support_pitch = _TextFieldProbe("2.0")
+    view._support_thickness = _TextFieldProbe("1.0")
+    view._support_footprint_offset = _TextFieldProbe("0.0")
+    view._support_contact_depth = _TextFieldProbe("0.0")
+    view._support_build_plate_z = _TextFieldProbe("0")
+    view._last_generated_support_path = tmp_path / "missing_preview.stl"
+    view._last_generated_support_grid = grid
+    view._last_generated_support_type = "X surface support"
+    options = view._support_generation_from_form()
+    view._last_generated_support_signature = view._support_generation_signature(
+        part,
+        0.5,
+        options,
+    )
+    config = type(
+        "ConfigProbe",
+        (),
+        {"support_geometry_path": None, "voxel_spacing": 0.5},
+    )()
+
+    assert view._active_generated_support_options() == options
     assert view._cached_generated_support_grid_for_config(config) is grid
+
+
+def test_volume_preview_adds_support_overlay_to_isosurface():
+    class _GridProbe:
+        bounds = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+
+        def outline(self):
+            return object()
+
+    class _PlotterProbe:
+        def __init__(self):
+            self.meshes = []
+
+        def clear(self):
+            pass
+
+        def enable_eye_dome_lighting(self):
+            pass
+
+        def add_mesh(self, *args, **kwargs):
+            self.meshes.append((args, kwargs))
+
+        def add_axes(self):
+            pass
+
+    pane = PreviewPane.__new__(PreviewPane)
+    pane._title = _LineEditProbe()
+    pane._status = _LineEditProbe()
+    plotter = _PlotterProbe()
+    grid = _GridProbe()
+    support_calls = []
+    pane._load_pyvista = lambda: object()
+    pane._ensure_plotter = lambda: plotter
+    pane._make_volume_cell_grid = lambda *_args, **_kwargs: grid
+    pane._prepare_scene = lambda _plotter: None
+    pane._add_isosurface = lambda *args, **kwargs: support_calls.append((args, kwargs))
+    pane._set_cad_camera = lambda *_args, **_kwargs: None
+    pane._render_plotter = lambda _plotter: None
+    volume = np.ones((2, 2, 2), dtype=bool)
+    support_mask = np.zeros_like(volume)
+    support_mask[0, 0, 0] = True
+
+    assert PreviewPane._render_voxels(
+        pane,
+        volume,
+        1.0,
+        (0.0, 0.0, 0.0),
+        "Voxel",
+        support_mask=support_mask,
+    )
+    assert len(support_calls) == 2
+    assert support_calls[1][1]["color"] == "#e85d04"
+    assert pane._title.text == "Isosurface + Support"
+
+
+def test_volume_preview_uses_support_stl_overlay_when_available(tmp_path):
+    class _GridProbe:
+        bounds = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+
+        def outline(self):
+            return object()
+
+    class _SupportMeshProbe:
+        n_cells = 12
+
+        @property
+        def bounds(self):
+            return (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+
+    class _PlotterProbe:
+        def clear(self):
+            pass
+
+        def enable_eye_dome_lighting(self):
+            pass
+
+        def add_mesh(self, *_args, **_kwargs):
+            pass
+
+        def add_axes(self):
+            pass
+
+    pane = PreviewPane.__new__(PreviewPane)
+    pane._title = _LineEditProbe()
+    pane._status = _LineEditProbe()
+    plotter = _PlotterProbe()
+    grid = _GridProbe()
+    support_mesh = _SupportMeshProbe()
+    support_path = tmp_path / "support.stl"
+    support_path.write_text("solid support\nendsolid support\n", encoding="utf-8")
+    isosurface_calls = []
+    support_mesh_calls = []
+    pane._load_pyvista = lambda: object()
+    pane._ensure_plotter = lambda: plotter
+    pane._make_volume_cell_grid = lambda *_args, **_kwargs: grid
+    pane._prepare_scene = lambda _plotter: None
+    pane._add_isosurface = lambda *args, **kwargs: isosurface_calls.append((args, kwargs))
+    pane._support_preview_mesh_for_path = lambda _path: support_mesh
+    pane._add_support_mesh_overlay = lambda _plotter, mesh: support_mesh_calls.append(mesh)
+    pane._set_cad_camera = lambda *_args, **_kwargs: None
+    pane._render_plotter = lambda _plotter: None
+    volume = np.ones((2, 2, 2), dtype=bool)
+    support_mask = np.zeros_like(volume)
+    support_mask[0, 0, 0] = True
+
+    assert PreviewPane._render_voxels(
+        pane,
+        volume,
+        1.0,
+        (0.0, 0.0, 0.0),
+        "Voxel",
+        support_mask=support_mask,
+        support_path=support_path,
+    )
+
+    assert len(isosurface_calls) == 1
+    assert not bool(isosurface_calls[0][0][1][0, 0, 0])
+    assert support_mesh_calls == [support_mesh]
+    assert pane._title.text == "Isosurface + Support"
 
 
 def test_support_overlay_downsampling_preserves_thin_features():
@@ -498,6 +998,30 @@ def test_support_overlay_downsampling_preserves_thin_features():
 
     assert prepared is not None
     assert prepared[0, 0, 0]
+
+
+def test_support_overlay_preview_bridges_diagonal_voxels_without_changing_source():
+    pane = PreviewPane.__new__(PreviewPane)
+    mask = np.zeros((3, 3, 1), dtype=bool)
+    mask[0, 0, 0] = True
+    mask[1, 1, 0] = True
+
+    prepared = pane._prepare_support_overlay_data(mask, stride=1, shape=mask.shape)
+    raw = pane._prepare_support_overlay_data(
+        mask,
+        stride=1,
+        shape=mask.shape,
+        bridge_diagonals=False,
+    )
+
+    assert prepared is not None
+    assert raw is not None
+    assert prepared[0, 1, 0]
+    assert prepared[1, 0, 0]
+    assert not raw[0, 1, 0]
+    assert not raw[1, 0, 0]
+    assert not mask[0, 1, 0]
+    assert not mask[1, 0, 0]
 
 
 def test_overhang_limit_control_is_hidden_until_overhang_mode():

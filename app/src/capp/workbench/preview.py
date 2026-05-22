@@ -25,9 +25,6 @@ def prepare_stl_preview_mesh(path: str | Path):
 
     mesh = pv.read(str(path)).extract_surface(algorithm="dataset_surface")
     original_cells = int(mesh.n_cells)
-    if mesh.n_cells > 450_000:
-        reduction = min(0.92, 1.0 - (220_000.0 / float(mesh.n_cells)))
-        mesh = mesh.decimate_pro(reduction, preserve_topology=True)
 
     with suppress(Exception):
         mesh = mesh.compute_normals(
@@ -88,7 +85,7 @@ def build_geometry_deviation_preview(
     pv = pane._load_pyvista()
 
     progress(5, "Preparing result volume")
-    data, stride = pane._prepare_volume_data(volume, "Smooth Surface")
+    data, stride = pane._prepare_volume_data(volume)
     if not pane._is_binary_volume(data):
         threshold = 0.5
     render_spacing = float(spacing) * stride
@@ -321,21 +318,6 @@ class PreviewPane:
         self.overhang_limit.setObjectName("PreviewOverhangLimit")
         self.overhang_limit.setFixedWidth(44)
         self.overhang_limit.setVisible(False)
-        self._render_mode = QComboBox()
-        self._render_mode.setObjectName("PreviewMode")
-        self._render_mode.addItems(
-            [
-                "Isosurface",
-                "Smooth Surface",
-                "ParaView Volume",
-                "Smooth Volume",
-                "Voxel Blocks",
-                "Slices",
-                "Points",
-            ]
-        )
-        self._render_mode.currentTextChanged.connect(self._rerender_last_volume)
-        self._render_mode.setVisible(False)
         self._status = QLabel("Open an STL or run a simulation to preview geometry.")
         self._status.setObjectName("PreviewStatus")
 
@@ -349,7 +331,6 @@ class PreviewPane:
         header_layout.addWidget(self.source_selector)
         header_layout.addWidget(self.stl_display_mode)
         header_layout.addWidget(self.overhang_limit)
-        header_layout.addWidget(self._render_mode)
         self._layout.addWidget(header)
         self._layout.addWidget(self._status)
         self._plotter = None
@@ -388,7 +369,6 @@ class PreviewPane:
     ) -> None:
         try:
             self._last_volume_request = None
-            self._render_mode.setVisible(False)
             plotter = self._ensure_plotter()
             plotter.clear()
             self._prepare_scene(plotter)
@@ -424,7 +404,6 @@ class PreviewPane:
     ) -> None:
         try:
             self._last_volume_request = None
-            self._render_mode.setVisible(False)
             plotter = self._ensure_plotter()
             plotter.clear()
             self._prepare_scene(plotter)
@@ -479,6 +458,20 @@ class PreviewPane:
             silhouette={"color": "#1f2937", "line_width": 2.0},
         )
 
+    def _add_support_mesh_overlay(self, plotter, support_mesh) -> None:
+        plotter.add_mesh(
+            support_mesh,
+            color="#e85d04",
+            edge_color="#7c2d12",
+            show_edges=support_mesh.n_cells <= 180_000,
+            smooth_shading=False,
+            lighting=True,
+            ambient=0.42,
+            diffuse=0.76,
+            specular=0.18,
+            silhouette={"color": "#7c2d12", "line_width": 1.7},
+        )
+
     def set_stl_controls_visible(self, visible: bool) -> None:
         self._stl_controls_visible = bool(visible)
         self.stl_display_mode.setVisible(visible)
@@ -492,7 +485,7 @@ class PreviewPane:
         self.overhang_limit.setVisible(show_overhang_limit)
 
     def set_volume_controls_visible(self, visible: bool) -> None:
-        self._render_mode.setVisible(visible)
+        return
 
     def show_voxels(
         self,
@@ -502,15 +495,24 @@ class PreviewPane:
         label: str = "Binary",
         *,
         support_mask: NDArray | None = None,
+        support_path: str | Path | None = None,
         raise_errors: bool = False,
     ) -> bool:
-        self._last_volume_request = (volume, spacing, origin, label, support_mask)
+        self._last_volume_request = (
+            volume,
+            spacing,
+            origin,
+            label,
+            support_mask,
+            support_path,
+        )
         return self._render_voxels(
             volume,
             spacing,
             origin,
             label,
             support_mask=support_mask,
+            support_path=support_path,
             raise_errors=raise_errors,
         )
 
@@ -546,7 +548,6 @@ class PreviewPane:
         try:
             preview = unpack_geometry_deviation_preview(preview)
             self._last_volume_request = None
-            self._render_mode.setVisible(False)
             plotter = self._ensure_plotter()
             plotter.clear()
             self._prepare_scene(plotter)
@@ -617,145 +618,63 @@ class PreviewPane:
         label: str,
         *,
         support_mask: NDArray | None = None,
+        support_path: str | Path | None = None,
         raise_errors: bool = False,
     ) -> bool:
         try:
             pv = self._load_pyvista()
             plotter = self._ensure_plotter()
-            self._render_mode.setVisible(True)
-            render_mode = self._render_mode.currentText()
-            data, stride = self._prepare_volume_data(volume, render_mode)
+            data, stride = self._prepare_volume_data(volume)
             binary_like = self._is_binary_volume(data)
-            support_data = self._prepare_support_overlay_data(
+            raw_support_data = self._prepare_support_overlay_data(
                 support_mask,
                 stride,
                 data.shape,
+                bridge_diagonals=False,
             )
+            support_data = (
+                self._bridge_diagonal_support_overlay(raw_support_data)
+                if raw_support_data is not None
+                else None
+            )
+            support_mesh = self._support_preview_mesh_for_path(support_path)
             has_support_overlay = (
-                support_data is not None
-                and binary_like
-                and bool(np.any(support_data))
+                support_mesh is not None
+                or (
+                    support_data is not None
+                    and binary_like
+                    and bool(np.any(support_data))
+                )
             )
-            if has_support_overlay:
+            if has_support_overlay and raw_support_data is not None:
                 data = data.copy()
-                data[support_data] = 0.0
-            smooth_volume = render_mode == "Smooth Volume"
-            surface_mode = render_mode in {"Isosurface", "Smooth Surface"}
-            smooth_point_grid = False
-            if smooth_volume:
-                data = self._prepare_smooth_volume_data(data, binary_like=binary_like)
-                smooth_point_grid = data.size <= 128_000_000
-            elif render_mode == "Smooth Surface":
-                data = self._prepare_smooth_volume_data(data, binary_like=binary_like)
-            block_stride = 1
-            if surface_mode:
-                render_spacing = spacing * stride
-                grid = self._make_volume_cell_grid(pv, data, render_spacing, origin, label)
-            elif smooth_point_grid:
-                render_spacing = spacing * stride
-                grid = self._make_volume_point_grid(pv, data, render_spacing, origin, label)
-            elif render_mode == "Voxel Blocks" and binary_like:
-                data, block_stride = self._prepare_binary_block_data(data)
-                render_spacing = spacing * stride * block_stride
-                grid = self._make_binary_cell_grid(pv, data, render_spacing, origin, label)
-            elif render_mode == "Points" and binary_like:
-                render_spacing = spacing * stride
-                grid = self._make_point_grid(pv, data, render_spacing, origin, label)
-            else:
-                render_spacing = spacing * stride
-                grid = self._make_volume_cell_grid(pv, data, render_spacing, origin, label)
+                data[raw_support_data] = 0.0
+            render_spacing = spacing * stride
+            grid = self._make_volume_cell_grid(pv, data, render_spacing, origin, label)
 
             plotter.clear()
             self._prepare_scene(plotter)
             with suppress(Exception):
                 plotter.enable_eye_dome_lighting()
 
-            fallback_stride = 0
-            if surface_mode:
+            self._add_isosurface(plotter, data, spacing=render_spacing, origin=origin)
+            if support_mesh is not None:
+                self._add_support_mesh_overlay(plotter, support_mesh)
+            elif has_support_overlay and support_data is not None:
                 self._add_isosurface(
                     plotter,
-                    data,
+                    support_data.astype(np.float32),
                     spacing=render_spacing,
                     origin=origin,
-                    smooth=render_mode == "Smooth Surface",
+                    color="#e85d04",
+                    edge_color="#7c2d12",
                 )
-                if has_support_overlay:
-                    self._add_isosurface(
-                        plotter,
-                        support_data.astype(np.float32),
-                        spacing=render_spacing,
-                        origin=origin,
-                        smooth=False,
-                        color="#e85d04",
-                        edge_color="#7c2d12",
-                    )
-            elif render_mode == "Points" and binary_like:
-                fallback_stride = self._add_binary_points(
-                    plotter,
-                    data,
-                    spacing=render_spacing,
-                    origin=origin,
-                )
-                if has_support_overlay:
-                    fallback_stride = max(
-                        fallback_stride,
-                        self._add_binary_points(
-                            plotter,
-                            support_data.astype(np.float32),
-                            spacing=render_spacing,
-                            origin=origin,
-                            color="#e85d04",
-                            point_size=3.0,
-                        ),
-                    )
-            elif render_mode == "Voxel Blocks" and binary_like:
-                fallback_stride = self._add_binary_blocks(plotter, grid, label, data)
-                if has_support_overlay:
-                    support_grid = self._make_binary_cell_grid(
-                        pv,
-                        support_data,
-                        render_spacing,
-                        origin,
-                        "Support",
-                    )
-                    fallback_stride = max(
-                        fallback_stride,
-                        self._add_binary_blocks(
-                            plotter,
-                            support_grid,
-                            "Support",
-                            support_data.astype(np.float32),
-                            color="#e85d04",
-                            edge_color="#7c2d12",
-                        ),
-                    )
-            elif render_mode == "Slices":
-                self._add_volume_slices(plotter, grid, label)
-            else:
-                try:
-                    self._add_paraview_volume(
-                        plotter,
-                        grid,
-                        label,
-                        data,
-                        binary_like=binary_like,
-                        smooth=smooth_point_grid,
-                        preference="point" if smooth_point_grid else "cell",
-                    )
-                except Exception:
-                    if smooth_volume:
-                        self._add_volume(plotter, grid, label, data)
-                    elif binary_like:
-                        grid = self._make_binary_cell_grid(pv, data, render_spacing, origin, label)
-                        fallback_stride = self._add_binary_blocks(plotter, grid, label, data)
-                    else:
-                        self._add_volume(plotter, grid, label, data)
             plotter.add_mesh(grid.outline(), color="#1f2937", line_width=1.8)
             plotter.add_axes()
             self._set_cad_camera(plotter, grid.bounds)
             self._render_plotter(plotter)
 
-            mode = render_mode if render_mode != "Points" else "Point Preview"
+            mode = "Isosurface"
             if has_support_overlay:
                 mode = f"{mode} + Support"
             self._title.setText(mode)
@@ -767,11 +686,27 @@ class PreviewPane:
                 raise
             return False
 
-    def _rerender_last_volume(self) -> None:
-        if self._last_volume_request is None:
-            return
-        volume, spacing, origin, label, support_mask = self._last_volume_request
-        self._render_voxels(volume, spacing, origin, label, support_mask=support_mask)
+    def _support_preview_mesh_for_path(self, support_path: str | Path | None):
+        if support_path is None:
+            return None
+        path = Path(support_path)
+        if not path.exists():
+            return None
+        with suppress(Exception):
+            resolved = path.resolve()
+            stat = resolved.stat()
+            cache_key = (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
+            cached_key = getattr(self, "_support_preview_mesh_cache_key", None)
+            cached_mesh = getattr(self, "_support_preview_mesh_cache", None)
+            if cached_key == cache_key and cached_mesh is not None:
+                return cached_mesh
+            mesh, _original_cells = prepare_stl_preview_mesh(resolved)
+            if int(getattr(mesh, "n_cells", 0) or 0) <= 0:
+                return None
+            self._support_preview_mesh_cache_key = cache_key
+            self._support_preview_mesh_cache = mesh
+            return mesh
+        return None
 
     def show_message(self, message: str) -> None:
         self._status.setText(message)
@@ -795,7 +730,6 @@ class PreviewPane:
     def _prepare_volume_data(
         self,
         volume: NDArray,
-        render_mode: str = "ParaView Volume",
     ) -> tuple[NDArray[np.float32], int]:
         data = np.asarray(volume)
         if data.ndim != 3:
@@ -803,7 +737,7 @@ class PreviewPane:
         if 0 in data.shape:
             raise ValueError("Volume preview cannot render an empty array.")
 
-        max_dimension, target_voxels = self._volume_lod_budget(render_mode)
+        max_dimension, target_voxels = self._volume_lod_budget()
         stride_by_dimension = int(np.ceil(max(data.shape) / max_dimension))
         stride_by_budget = int(np.ceil((data.size / target_voxels) ** (1.0 / 3.0)))
         stride = max(1, stride_by_dimension, stride_by_budget)
@@ -828,6 +762,8 @@ class PreviewPane:
         support_mask: NDArray | None,
         stride: int,
         shape: tuple[int, int, int],
+        *,
+        bridge_diagonals: bool = True,
     ) -> NDArray[np.bool_] | None:
         if support_mask is None:
             return None
@@ -839,57 +775,33 @@ class PreviewPane:
         slices = tuple(slice(0, min(mask.shape[axis], shape[axis])) for axis in range(3))
         prepared = np.zeros(shape, dtype=bool)
         prepared[slices] = mask[slices]
+        if bridge_diagonals:
+            prepared = self._bridge_diagonal_support_overlay(prepared)
         return np.ascontiguousarray(prepared)
 
-    def _volume_lod_budget(self, render_mode: str) -> tuple[int, int]:
-        if render_mode == "Isosurface":
-            return 768, 160_000_000
-        if render_mode == "Smooth Surface":
-            return 512, 96_000_000
-        if render_mode in {"ParaView Volume", "Slices"}:
-            return 1536, 512_000_000
-        if render_mode == "Points":
-            return 1536, 512_000_000
-        return 1536, 512_000_000
-
-    def _volume_opacity(self, data: NDArray[np.float32]) -> list[float]:
-        if np.count_nonzero((data > 0.0) & (data < 1.0)):
-            return [0.0, 0.02, 0.08, 0.22, 0.42, 0.68]
-        return [0.0, 0.0, 0.72, 0.9]
-
-    def _prepare_smooth_volume_data(
+    def _bridge_diagonal_support_overlay(
         self,
-        data: NDArray[np.float32],
-        *,
-        binary_like: bool,
-    ) -> NDArray[np.float32]:
-        if data.size > 96_000_000:
-            return np.ascontiguousarray(data)
+        mask: NDArray[np.bool_],
+    ) -> NDArray[np.bool_]:
+        prepared = np.asarray(mask, dtype=bool).copy()
+        if prepared.ndim != 3 or prepared.shape[0] < 2 or prepared.shape[1] < 2:
+            return prepared
 
-        from scipy.ndimage import gaussian_filter
+        down_right_pairs = mask[:-1, :-1, :] & mask[1:, 1:, :]
+        prepared[:-1, 1:, :] |= down_right_pairs
+        prepared[1:, :-1, :] |= down_right_pairs
 
-        smooth = data.astype(np.float32, copy=False)
-        sigma = 0.72 if binary_like else 0.48
-        smooth = gaussian_filter(smooth, sigma=sigma, mode="nearest")
-        max_value = float(smooth.max()) if smooth.size else 0.0
-        if max_value > 0.0:
-            smooth = smooth / max_value
-        return np.ascontiguousarray(np.clip(smooth, 0.0, 1.0))
+        down_left_pairs = mask[:-1, 1:, :] & mask[1:, :-1, :]
+        prepared[:-1, :-1, :] |= down_left_pairs
+        prepared[1:, 1:, :] |= down_left_pairs
+        return prepared
+
+    def _volume_lod_budget(self) -> tuple[int, int]:
+        return 768, 160_000_000
 
     def _is_binary_volume(self, data: NDArray[np.float32]) -> bool:
         occupied = data[data > 0.0]
         return bool(occupied.size and np.allclose(occupied, 1.0))
-
-    def _prepare_binary_block_data(
-        self,
-        data: NDArray[np.float32],
-    ) -> tuple[NDArray[np.float32], int]:
-        occupied = int(np.count_nonzero(data))
-        max_blocks = 1_000_000
-        stride = max(1, int(np.ceil((occupied / max_blocks) ** (1.0 / 3.0))))
-        if stride > 1:
-            data = self._max_pool_binary(data, stride)
-        return np.ascontiguousarray(data), stride
 
     def _max_pool_binary(self, data: NDArray[np.float32], stride: int) -> NDArray[np.float32]:
         pad_width = []
@@ -908,22 +820,6 @@ class PreviewPane:
         ).max(axis=(1, 3, 5))
         return pooled.astype(np.float32)
 
-    def _make_binary_cell_grid(
-        self,
-        pv,
-        data: NDArray[np.float32],
-        spacing: float,
-        origin: tuple[float, float, float],
-        label: str,
-    ):
-        grid = pv.ImageData(
-            dimensions=(data.shape[0] + 1, data.shape[1] + 1, data.shape[2] + 1),
-            spacing=(spacing, spacing, spacing),
-            origin=origin,
-        )
-        grid.cell_data[label] = data.astype(np.uint8, copy=False).ravel(order="F")
-        return grid
-
     def _make_volume_cell_grid(
         self,
         pv,
@@ -940,119 +836,6 @@ class PreviewPane:
         grid.cell_data[label] = data.astype(np.float32, copy=False).ravel(order="F")
         grid.set_active_scalars(label, preference="cell")
         return grid
-
-    def _make_volume_point_grid(
-        self,
-        pv,
-        data: NDArray[np.float32],
-        spacing: float,
-        origin: tuple[float, float, float],
-        label: str,
-    ):
-        point_data = np.pad(data, ((0, 1), (0, 1), (0, 1)), mode="edge")
-        grid = pv.ImageData(
-            dimensions=point_data.shape,
-            spacing=(spacing, spacing, spacing),
-            origin=origin,
-        )
-        grid.point_data[label] = point_data.astype(np.float32, copy=False).ravel(order="F")
-        grid.set_active_scalars(label, preference="point")
-        return grid
-
-    def _make_point_grid(
-        self,
-        pv,
-        data: NDArray[np.float32],
-        spacing: float,
-        origin: tuple[float, float, float],
-        label: str,
-    ):
-        grid = pv.ImageData(
-            dimensions=data.shape,
-            spacing=(spacing, spacing, spacing),
-            origin=origin,
-        )
-        grid.point_data[label] = data.astype(np.float32, copy=False).ravel(order="F")
-        grid.set_active_scalars(label)
-        return grid
-
-    def _add_binary_points(
-        self,
-        plotter,
-        data: NDArray[np.float32],
-        *,
-        spacing: float,
-        origin: tuple[float, float, float],
-        color: str = "#2563eb",
-        point_size: float | None = None,
-    ) -> int:
-        pv = self._load_pyvista()
-        coords = np.argwhere(data > 0.0)
-        if coords.size == 0:
-            raise ValueError("Voxel preview has no visible voxels.")
-
-        max_points = 2_000_000
-        point_stride = max(1, int(np.ceil(coords.shape[0] / max_points)))
-        if point_stride > 1:
-            coords = coords[::point_stride]
-
-        points = coords.astype(np.float32)
-        points = points * float(spacing) + np.asarray(origin, dtype=np.float32)
-        points += 0.5 * float(spacing)
-        cloud = pv.PolyData(points)
-        plotter.add_points(
-            cloud,
-            color=color,
-            point_size=(
-                point_size
-                if point_size is not None
-                else (2.6 if point_stride == 1 else 2.2)
-            ),
-            opacity=0.72,
-            render_points_as_spheres=False,
-        )
-        return point_stride
-
-    def _add_binary_blocks(
-        self,
-        plotter,
-        grid,
-        label: str,
-        data: NDArray[np.float32],
-        *,
-        color: str = "#2563eb",
-        edge_color: str = "#1e3a8a",
-    ) -> int:
-        try:
-            blocks = grid.threshold(0.5, scalars=label, preference="cell")
-            if blocks.n_cells == 0:
-                raise ValueError("No occupied voxel cells to render.")
-            surface = blocks.extract_surface()
-            if surface.n_cells == 0:
-                raise ValueError("No occupied voxel surface to render.")
-            plotter.add_mesh(
-                surface,
-                color=color,
-                edge_color=edge_color,
-                show_edges=surface.n_cells <= 180_000,
-                line_width=0.08,
-                opacity=1.0,
-                lighting=True,
-                ambient=0.28,
-                diffuse=0.84,
-                specular=0.08,
-                specular_power=10.0,
-                smooth_shading=False,
-                culling=False,
-            )
-        except Exception:
-            return self._add_binary_points(
-                plotter,
-                data,
-                spacing=float(grid.spacing[0]),
-                origin=tuple(float(v) for v in grid.origin),
-            )
-        return 0
 
     def _make_isosurface_mesh(
         self,
@@ -1092,42 +875,37 @@ class PreviewPane:
         *,
         spacing: float,
         origin: tuple[float, float, float],
-        smooth: bool,
         color: str | None = None,
         edge_color: str = "#1f2937",
     ) -> None:
         pv = self._load_pyvista()
-        try:
-            surface = self._make_isosurface_mesh(
-                pv,
-                data,
-                spacing=spacing,
-                origin=origin,
-                level=0.45 if smooth else 0.5,
+        surface = self._make_isosurface_mesh(
+            pv,
+            data,
+            spacing=spacing,
+            origin=origin,
+            level=0.5,
+        )
+        with suppress(Exception):
+            surface = surface.compute_normals(
+                point_normals=True,
+                cell_normals=False,
+                auto_orient_normals=True,
+                consistent_normals=True,
+                split_vertices=False,
             )
-            with suppress(Exception):
-                surface = surface.compute_normals(
-                    point_normals=True,
-                    cell_normals=False,
-                    auto_orient_normals=True,
-                    consistent_normals=True,
-                    split_vertices=False,
-                )
-            plotter.add_mesh(
-                surface,
-                color=color or ("#2f6f9f" if smooth else "#2d6f99"),
-                smooth_shading=smooth,
-                show_edges=False,
-                lighting=True,
-                ambient=0.46 if smooth else 0.56,
-                diffuse=0.62 if smooth else 0.5,
-                specular=0.08 if smooth else 0.0,
-                specular_power=10.0,
-                silhouette={"color": edge_color, "line_width": 0.8} if smooth else False,
-            )
-        except Exception:
-            grid = self._make_binary_cell_grid(pv, data > 0.0, spacing, origin, "Binary")
-            self._add_binary_blocks(plotter, grid, "Binary", data)
+        plotter.add_mesh(
+            surface,
+            color=color or "#2d6f99",
+            smooth_shading=False,
+            show_edges=False,
+            lighting=True,
+            ambient=0.56,
+            diffuse=0.5,
+            specular=0.0,
+            specular_power=10.0,
+            silhouette={"color": edge_color, "line_width": 0.8},
+        )
 
     def _geometry_deviation_surface(
         self,
@@ -1170,121 +948,6 @@ class PreviewPane:
             "sample_count": float(distances.size),
         }
         return deviation_surface, metrics
-
-    def _add_paraview_volume(
-        self,
-        plotter,
-        grid,
-        label: str,
-        data: NDArray[np.float32],
-        *,
-        binary_like: bool,
-        smooth: bool = False,
-        preference: str = "cell",
-    ) -> str:
-        if smooth:
-            opacity = [0.0, 0.0, 0.025, 0.14, 0.38, 0.78]
-            cmap = "Blues"
-            opacity_unit_distance = max(float(grid.spacing[0]) * 0.58, 1e-4)
-            ambient = 0.14
-            diffuse = 0.9
-            specular = 0.2
-            specular_power = 18.0
-        elif binary_like:
-            opacity = [0.0, 0.0, 0.08, 0.68, 0.92]
-            cmap = "Blues"
-            opacity_unit_distance = max(float(grid.spacing[0]) * 0.45, 1e-4)
-            ambient = 0.22
-            diffuse = 0.82
-            specular = 0.12
-            specular_power = 12.0
-        else:
-            opacity = [0.0, 0.015, 0.06, 0.18, 0.34, 0.58]
-            cmap = "viridis"
-            opacity_unit_distance = max(float(grid.spacing[0]) * 0.75, 1e-4)
-            ambient = 0.22
-            diffuse = 0.82
-            specular = 0.12
-            specular_power = 12.0
-
-        options = {
-            "scalars": label,
-            "clim": (0.0, 1.0),
-            "opacity": opacity,
-            "cmap": cmap,
-            "blending": "composite",
-            "shade": True,
-            "ambient": ambient,
-            "diffuse": diffuse,
-            "specular": specular,
-            "specular_power": specular_power,
-            "show_scalar_bar": False,
-            "preference": preference,
-            "opacity_unit_distance": opacity_unit_distance,
-        }
-        last_error = None
-        mappers = ("gpu", "smart", "fixed_point") if smooth else ("fixed_point", "smart", "gpu")
-        for mapper in mappers:
-            try:
-                actor = plotter.add_volume(grid, mapper=mapper, **options)
-                if smooth:
-                    self._set_volume_interpolation(actor, "linear")
-                else:
-                    self._set_volume_interpolation(actor, "nearest")
-                return f"[{mapper}]"
-            except Exception as exc:
-                last_error = exc
-        raise RuntimeError(f"Volume mapper failed: {last_error}")
-
-    def _add_volume_slices(self, plotter, grid, label: str) -> None:
-        bounds = grid.bounds
-        slices = grid.slice_orthogonal(
-            x=0.5 * (bounds[0] + bounds[1]),
-            y=0.5 * (bounds[2] + bounds[3]),
-            z=0.5 * (bounds[4] + bounds[5]),
-        )
-        plotter.add_mesh(
-            slices,
-            scalars=label,
-            cmap="viridis",
-            clim=(0.0, 1.0),
-            opacity=0.9,
-            lighting=False,
-            show_scalar_bar=False,
-        )
-
-    def _add_volume(self, plotter, grid, label: str, data: NDArray[np.float32]) -> None:
-        options = {
-            "scalars": label,
-            "clim": (0.0, 1.0),
-            "opacity": self._volume_opacity(data),
-            "cmap": "Blues",
-            "blending": "composite",
-            "shade": True,
-            "diffuse": 0.8,
-            "specular": 0.15,
-            "show_scalar_bar": False,
-        }
-        try:
-            actor = plotter.add_volume(grid, mapper="gpu", **options)
-        except Exception:
-            actor = plotter.add_volume(grid, mapper="smart", **options)
-        self._set_volume_interpolation(actor, "nearest")
-
-    def _set_volume_interpolation(self, actor, mode: str) -> None:
-        if isinstance(actor, list):
-            for item in actor:
-                self._set_volume_interpolation(item, mode)
-            return
-        setter = (
-            "SetInterpolationTypeToLinear"
-            if mode == "linear"
-            else "SetInterpolationTypeToNearest"
-        )
-        with suppress(Exception):
-            getattr(actor.GetProperty(), setter)()
-        with suppress(Exception):
-            getattr(actor.prop, setter)()
 
     def _add_overhang_mesh(self, plotter, mesh, overhang_limit: float) -> None:
         overhang_mesh = mesh.copy(deep=False)

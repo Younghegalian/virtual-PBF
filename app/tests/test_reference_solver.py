@@ -3,6 +3,7 @@ import numpy as np
 from capp.domain import SolverParameters, VoxelGrid
 from capp.solver.reference import (
     ReferenceLayerwiseMarkovSolver,
+    _idp_allowed_from_part_neighbors,
     _idp_model_without_support,
     _postprocess_binary,
     _update_von_neumann_layer,
@@ -108,3 +109,44 @@ def test_support_mask_only_suppresses_idp_term():
     )
 
     assert updated[1, 1] > 0.0
+
+
+def test_support_neighbor_does_not_enable_idp_halo():
+    voxel_calc = np.zeros((5, 5, 3), dtype=np.float32)
+    support_calc = np.zeros((5, 5, 3), dtype=bool)
+    support_calc[2, 1, 1] = True
+    voxel_calc[2, 1, 1] = 1.0
+    part_calc = voxel_calc.astype(bool) & ~support_calc
+    support_layer = np.zeros((3, 3), dtype=bool)
+    idp_allowed = _idp_allowed_from_part_neighbors(part_calc, layer=1)
+    support_only_idp = _idp_model_without_support(0.8, support_layer, idp_allowed)
+
+    assert support_only_idp[1, 1] == 0.0
+
+    part_calc = voxel_calc.astype(bool)
+    idp_allowed = _idp_allowed_from_part_neighbors(part_calc, layer=1)
+    part_idp = _idp_model_without_support(0.8, support_layer, idp_allowed)
+
+    assert part_idp[1, 1] == 0.8
+
+    probability = np.zeros((5, 5, 3), dtype=np.float32)
+    probability[2, 1, 1] = 0.5
+    support_only_update = _update_von_neumann_layer(
+        probability=probability,
+        voxel_calc=voxel_calc,
+        layer=1,
+        coeffs=(1.0, 0.0, 0.0, 0.0, 0.0),
+        min_val=0.0,
+        idp_model=support_only_idp,
+    )
+    part_update = _update_von_neumann_layer(
+        probability=probability,
+        voxel_calc=voxel_calc,
+        layer=1,
+        coeffs=(1.0, 0.0, 0.0, 0.0, 0.0),
+        min_val=0.0,
+        idp_model=part_idp,
+    )
+
+    assert support_only_update[1, 1] == 0.0
+    assert part_update[1, 1] > 0.0

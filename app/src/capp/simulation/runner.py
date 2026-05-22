@@ -61,6 +61,7 @@ def run_simulation_grid(
         probability_density=result.probability_density,
         elapsed_seconds=result.elapsed_seconds,
         source_geometry=config.geometry_path,
+        support_geometry=config.support_geometry_path,
         support_mask=result.support_mask,
     )
 

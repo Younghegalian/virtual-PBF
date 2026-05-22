@@ -78,7 +78,7 @@ def voxelize_part_and_support(
 
     part_grid = voxelize_mesh(part_path, spacing, progress_callback=part_progress)
     grids = [part_grid]
-    if support_generation is not None:
+    if support_generation is not None and support_path is None:
         generated_grid = generate_overhang_support_grid(
             part_path,
             part_grid,
@@ -99,8 +99,11 @@ def voxelize_part_and_support(
         grids.append(support_grid)
     _report_progress(progress_callback, 96, "Combining part and support voxels")
     combined = union_voxel_grids(grids)
-    part_mask = _grid_data_in_frame(part_grid, combined.origin, combined.shape, combined.spacing)
-    support_mask = combined.support_mask & ~part_mask
+    support_mask = _support_mask_outside_part_or_fallback(
+        combined,
+        part_grid,
+        preserve_overlap=support_generation is not None,
+    )
     return VoxelGrid(
         data=combined.data,
         spacing=combined.spacing,
@@ -113,6 +116,7 @@ def voxelize_part_with_support_grid(
     part_path: str | Path,
     support_grid: VoxelGrid,
     spacing: float,
+    support_type: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> VoxelGrid:
     def part_progress(percent: int, message: str) -> None:
@@ -124,8 +128,11 @@ def voxelize_part_with_support_grid(
 
     _report_progress(progress_callback, 88, "Using cached generated support grid")
     combined = union_voxel_grids([part_grid, _support_labeled_grid(support_grid)])
-    part_mask = _grid_data_in_frame(part_grid, combined.origin, combined.shape, combined.spacing)
-    support_mask = combined.support_mask & ~part_mask
+    support_mask = _support_mask_outside_part_or_fallback(
+        combined,
+        part_grid,
+        preserve_overlap=True,
+    )
     _report_progress(progress_callback, 96, "Combining part and cached support voxels")
     return VoxelGrid(
         data=combined.data,
@@ -298,6 +305,26 @@ def _grid_data_in_frame(
     return data
 
 
+def _support_mask_outside_part_or_fallback(
+    combined: VoxelGrid,
+    part_grid: VoxelGrid,
+    *,
+    preserve_overlap: bool = False,
+) -> np.ndarray:
+    if preserve_overlap:
+        return combined.support_mask.copy()
+    part_mask = _grid_data_in_frame(
+        part_grid,
+        combined.origin,
+        combined.shape,
+        combined.spacing,
+    )
+    support_mask = combined.support_mask & ~part_mask
+    if np.any(combined.support_mask) and not np.any(support_mask):
+        return combined.support_mask.copy()
+    return support_mask
+
+
 def voxelize_surface_shell(
     path: str | Path,
     spacing: float,
@@ -334,6 +361,8 @@ def voxelize_surface_shell(
         progress_start=5,
         progress_end=85,
         message="Rasterizing support",
+        multi_axis=True,
+        sample_offsets=((0.5, 0.5),),
     )
 
     iterations = max(0, int(np.ceil(shell_thickness / float(spacing))) - 1)
@@ -571,27 +600,10 @@ def _apply_support_contact_depth(
 
 def _x_surface_lattice_pattern(footprint: np.ndarray, pitch_cells: int) -> np.ndarray:
     footprint = np.asarray(footprint, dtype=bool)
-    pattern = np.zeros_like(footprint, dtype=bool)
-    labels, count = ndimage.label(footprint)
-    if count == 0:
-        return pattern
-
     period = max(1, int(round(float(pitch_cells) * np.sqrt(2.0))))
     x_index, y_index = np.indices(footprint.shape)
-    for label in range(1, count + 1):
-        component = labels == label
-        coords = np.argwhere(component)
-        if coords.size == 0:
-            continue
-        center = np.rint((coords.min(axis=0) + coords.max(axis=0)) * 0.5).astype(np.int32)
-        positive = (x_index + y_index) - int(center[0] + center[1])
-        negative = (x_index - y_index) - int(center[0] - center[1])
-        component_pattern = _on_centered_lattice(positive, period) | _on_centered_lattice(
-            negative,
-            period,
-        )
-        pattern |= component & component_pattern
-    return pattern
+    pattern = _on_lattice(x_index + y_index, period) | _on_lattice(x_index - y_index, period)
+    return footprint & pattern
 
 
 def _column_lattice_pattern(footprint: np.ndarray, pitch_cells: int) -> np.ndarray:
@@ -638,7 +650,7 @@ def _centered_lattice_positions(lower: int, upper: int, pitch_cells: int) -> np.
     return positions
 
 
-def _on_centered_lattice(values: np.ndarray, period: int) -> np.ndarray:
+def _on_lattice(values: np.ndarray, period: int) -> np.ndarray:
     if period <= 1:
         return np.ones_like(values, dtype=bool)
     remainder = np.mod(values, int(period))
@@ -716,6 +728,14 @@ def _mark_triangles_in_grid(
     progress_start: int = 0,
     progress_end: int = 100,
     message: str = "Rasterizing support",
+    multi_axis: bool = False,
+    sample_offsets: tuple[tuple[float, float], ...] = (
+        (0.5, 0.5),
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ),
 ) -> None:
     triangles = np.asarray(triangles, dtype=np.float64)
     if triangles.size == 0:
@@ -729,7 +749,15 @@ def _mark_triangles_in_grid(
             progress = progress_start + int((index / total) * (progress_end - progress_start))
             _report_progress(progress_callback, progress, message)
         try:
-            _mark_projected_triangle(data, triangle, origin, float(spacing), float(step))
+            _mark_projected_triangle(
+                data,
+                triangle,
+                origin,
+                float(spacing),
+                float(step),
+                multi_axis=multi_axis,
+                sample_offsets=sample_offsets,
+            )
         except Exception:
             _mark_triangle_samples(data, triangle, origin, float(spacing), float(step))
     _report_progress(progress_callback, progress_end, message)
@@ -741,6 +769,15 @@ def _mark_projected_triangle(
     origin: np.ndarray,
     spacing: float,
     step: float,
+    *,
+    multi_axis: bool = False,
+    sample_offsets: tuple[tuple[float, float], ...] = (
+        (0.5, 0.5),
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ),
 ) -> None:
     triangle = np.asarray(triangle, dtype=np.float64)
     _mark_points_in_grid(data, triangle, origin, spacing)
@@ -751,7 +788,28 @@ def _mark_projected_triangle(
         _mark_triangle_edges(data, triangle, origin, spacing, step)
         return
 
-    drop_axis = int(np.argmax(np.abs(normal)))
+    drop_axes = range(3) if multi_axis else (int(np.argmax(np.abs(normal))),)
+    marked = False
+    for drop_axis in drop_axes:
+        marked = (
+            _mark_projected_triangle_on_axis(
+                data,
+                grid_triangle,
+                int(drop_axis),
+                sample_offsets,
+            )
+            or marked
+        )
+    if not marked:
+        _mark_triangle_edges(data, triangle, origin, spacing, step)
+
+
+def _mark_projected_triangle_on_axis(
+    data: np.ndarray,
+    grid_triangle: np.ndarray,
+    drop_axis: int,
+    sample_offsets: tuple[tuple[float, float], ...],
+) -> bool:
     axes = [axis for axis in range(3) if axis != drop_axis]
     projected = grid_triangle[:, axes]
     lower = np.floor(projected.min(axis=0)).astype(np.int64) - 1
@@ -759,28 +817,21 @@ def _mark_projected_triangle(
     lower = np.maximum(lower, 0)
     upper = np.minimum(upper, np.asarray(data.shape, dtype=np.int64)[axes] - 1)
     if np.any(upper < lower):
-        return
+        return False
 
     u_index = np.arange(lower[0], upper[0] + 1, dtype=np.int64)
     v_index = np.arange(lower[1], upper[1] + 1, dtype=np.int64)
     if u_index.size == 0 or v_index.size == 0:
-        return
+        return False
 
     u_grid, v_grid = np.meshgrid(u_index, v_index, indexing="ij")
     p0, p1, p2 = projected
     denominator = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
     if abs(float(denominator)) <= 1e-12:
-        _mark_triangle_edges(data, triangle, origin, spacing, step)
-        return
+        return False
 
     index_chunks = []
-    for u_offset, v_offset in (
-        (0.5, 0.5),
-        (0.0, 0.0),
-        (1.0, 0.0),
-        (0.0, 1.0),
-        (1.0, 1.0),
-    ):
+    for u_offset, v_offset in sample_offsets:
         u = u_grid.astype(np.float64) + u_offset
         v = v_grid.astype(np.float64) + v_offset
         alpha = (
@@ -805,14 +856,15 @@ def _mark_projected_triangle(
         chunk[:, drop_axis] = np.floor(dropped).astype(np.int64)
         index_chunks.append(chunk)
     if not index_chunks:
-        _mark_triangle_edges(data, triangle, origin, spacing, step)
-        return
+        return False
 
     indices = np.vstack(index_chunks)
     valid = np.all((indices >= 0) & (indices < np.asarray(data.shape)), axis=1)
     if np.any(valid):
         valid_indices = indices[valid]
         data[valid_indices[:, 0], valid_indices[:, 1], valid_indices[:, 2]] = True
+        return True
+    return False
 
 
 def _mark_triangle_edges(

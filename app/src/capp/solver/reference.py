@@ -58,6 +58,7 @@ class ReferenceLayerwiseMarkovSolver:
             ((1, 1), (1, 1), (1, 1)),
             mode="constant",
         )
+        part_calc = voxel_calc.astype(bool) & ~support_calc
 
         probability = np.zeros_like(voxel_calc, dtype=np.float32)
         probability[:, :, 0] = 1.0
@@ -88,7 +89,12 @@ class ReferenceLayerwiseMarkovSolver:
             center_voxel = voxel_calc[1 : x_size + 1, 1 : y_size + 1, layer]
             layer_view = probability[1 : x_size + 1, 1 : y_size + 1, layer]
             support_layer = support_calc[1 : x_size + 1, 1 : y_size + 1, layer]
-            layer_idp_model = _idp_model_without_support(idp_model, support_layer)
+            idp_allowed_layer = _idp_allowed_from_part_neighbors(part_calc, layer)
+            layer_idp_model = _idp_model_without_support(
+                idp_model,
+                support_layer,
+                idp_allowed_layer,
+            )
             progress.layer(
                 layer=layer,
                 layer_count=z_size,
@@ -230,15 +236,38 @@ def _has_initial_deviation(parameters: SolverParameters) -> bool:
     return parameters.initial_deviation > 0.0
 
 
-def _idp_model_without_support(idp_model, support_layer: NDArray[np.bool_]):
+def _idp_allowed_from_part_neighbors(
+    part_calc: NDArray[np.bool_],
+    layer: int,
+) -> NDArray[np.bool_]:
+    x_size = part_calc.shape[0] - 2
+    y_size = part_calc.shape[1] - 2
+    return (
+        part_calc[1 : x_size + 1, 1 : y_size + 1, layer]
+        | part_calc[1 : x_size + 1, 0:y_size, layer]
+        | part_calc[0:x_size, 1 : y_size + 1, layer]
+        | part_calc[2 : x_size + 2, 1 : y_size + 1, layer]
+        | part_calc[1 : x_size + 1, 2 : y_size + 2, layer]
+        | part_calc[1 : x_size + 1, 1 : y_size + 1, layer - 1]
+    )
+
+
+def _idp_model_without_support(
+    idp_model,
+    support_layer: NDArray[np.bool_],
+    idp_allowed_layer: NDArray[np.bool_] | None = None,
+):
     support = np.asarray(support_layer, dtype=bool)
-    if not np.any(support):
+    blocked = support.copy()
+    if idp_allowed_layer is not None:
+        blocked |= ~np.asarray(idp_allowed_layer, dtype=bool)
+    if not np.any(blocked):
         return idp_model
     if np.ndim(idp_model) == 0:
-        masked = np.full(support.shape, float(idp_model), dtype=np.float32)
+        masked = np.full(blocked.shape, float(idp_model), dtype=np.float32)
     else:
         masked = np.asarray(idp_model, dtype=np.float32).copy()
-    masked[support] = 0.0
+    masked[blocked] = 0.0
     return masked
 
 

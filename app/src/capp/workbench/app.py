@@ -410,6 +410,11 @@ class _VoxelizationWorker(QRunnable):
                     self.config.geometry_path,
                     self.generated_support_grid,
                     self.config.voxel_spacing,
+                    support_type=getattr(
+                        getattr(self.config, "support_generation", None),
+                        "support_type",
+                        None,
+                    ),
                     progress_callback=progress,
                 )
             else:
@@ -878,6 +883,7 @@ class WorkbenchMainWindow:
         self._last_voxel_grid = None
         self._last_voxel_preview_data = None
         self._last_voxel_signature = None
+        self._last_voxel_support_path = None
         self._loaded_result = None
         self._result_revision = 0
         self._busy = False
@@ -895,7 +901,9 @@ class WorkbenchMainWindow:
         self._last_generated_support_path = None
         self._last_generated_support_type = None
         self._last_generated_support_signature = None
+        self._last_generated_support_dependency_snapshot = None
         self._last_generated_support_options = None
+        self._last_generated_support_dirty = False
         self._save_outputs_worker = None
         self._model_calibration_worker = None
         self._save_model_calibration_worker = None
@@ -1491,6 +1499,7 @@ class WorkbenchMainWindow:
     def _build_simulation_page(self):
         from PySide6.QtWidgets import (
             QComboBox,
+            QDoubleSpinBox,
             QFormLayout,
             QGroupBox,
             QHBoxLayout,
@@ -1535,32 +1544,64 @@ class WorkbenchMainWindow:
         geometry_form.addRow("Part type", self._part_type)
 
         self._part_geometry = QLineEdit()
-        self._part_geometry.textChanged.connect(self._invalidate_voxelization)
+        self._part_geometry.textChanged.connect(self._generated_support_dependency_changed)
         self._part_geometry.editingFinished.connect(self._preview_part_geometry)
         geometry_form.addRow(
             "Part geometry",
             self._file_row(self._part_geometry, self._browse_part),
         )
 
-        orientation_row = QHBoxLayout()
-        orientation_row.setContentsMargins(0, 0, 0, 0)
-        orientation_row.setSpacing(4)
-        self._orientation_x = QLineEdit("0")
-        self._orientation_y = QLineEdit("0")
-        self._orientation_z = QLineEdit("0")
+        orientation_widget = QWidget()
+        orientation_layout = QVBoxLayout(orientation_widget)
+        orientation_layout.setContentsMargins(0, 0, 0, 0)
+        orientation_layout.setSpacing(4)
+        orientation_axis_row = QHBoxLayout()
+        orientation_axis_row.setContentsMargins(0, 0, 0, 0)
+        orientation_axis_row.setSpacing(6)
+        self._orientation_x = QDoubleSpinBox()
+        self._orientation_y = QDoubleSpinBox()
+        self._orientation_z = QDoubleSpinBox()
         self._orientation_fields = [
             self._orientation_x,
             self._orientation_y,
             self._orientation_z,
         ]
         for label_text, field in zip(("X", "Y", "Z"), self._orientation_fields, strict=True):
+            axis_widget = QWidget()
+            axis_layout = QHBoxLayout(axis_widget)
+            axis_layout.setContentsMargins(0, 0, 0, 0)
+            axis_layout.setSpacing(3)
             label = QLabel(label_text)
-            field.setMaximumWidth(64)
-            field.textChanged.connect(self._geometry_orientation_changed)
+            label.setMinimumWidth(12)
+            field.setRange(-180.0, 180.0)
+            field.setDecimals(1)
+            field.setSingleStep(5.0)
+            field.setSuffix(" deg")
+            field.setAccelerated(True)
+            field.setKeyboardTracking(False)
+            field.setMinimumWidth(92)
+            field.valueChanged.connect(self._geometry_orientation_changed)
             field.editingFinished.connect(self._preview_part_geometry)
-            orientation_row.addWidget(label)
-            orientation_row.addWidget(field)
-        geometry_form.addRow("Orientation (deg)", orientation_row)
+            axis_layout.addWidget(label)
+            axis_layout.addWidget(field)
+            orientation_axis_row.addWidget(axis_widget)
+        orientation_action_row = QHBoxLayout()
+        orientation_action_row.setContentsMargins(0, 0, 0, 0)
+        orientation_action_row.setSpacing(4)
+        for label_text, axis_index in (("X +90", 0), ("Y +90", 1), ("Z +90", 2)):
+            rotate_button = QPushButton(label_text)
+            rotate_button.setToolTip(f"Rotate {label_text[0]} by 90 deg")
+            rotate_button.clicked.connect(
+                lambda _=False, index=axis_index: self._rotate_orientation_axis(index, 90.0)
+            )
+            orientation_action_row.addWidget(rotate_button)
+        reset_orientation = QPushButton("Reset")
+        reset_orientation.setToolTip("Reset orientation")
+        reset_orientation.clicked.connect(self._reset_geometry_orientation)
+        orientation_action_row.addWidget(reset_orientation)
+        orientation_layout.addLayout(orientation_axis_row)
+        orientation_layout.addLayout(orientation_action_row)
+        geometry_form.addRow("Orientation", orientation_widget)
 
         self._support_options_toggle = QToolButton()
         self._support_options_toggle.setObjectName("SupportOptionsToggle")
@@ -1608,7 +1649,7 @@ class WorkbenchMainWindow:
             self._support_build_plate_z,
         ]
         for field in self._support_generation_fields:
-            field.textChanged.connect(self._invalidate_voxelization)
+            field.textChanged.connect(self._generated_support_dependency_changed)
         support_form.addRow("Overhang angle (deg)", self._support_overhang_angle)
         support_form.addRow("Pattern pitch (mm)", self._support_pitch)
         support_form.addRow("Thickness (mm)", self._support_thickness)
@@ -1816,28 +1857,12 @@ class WorkbenchMainWindow:
         voxelize.clicked.connect(self._voxelize_geometry)
         action_row.addWidget(voxelize)
 
-        save_voxel_grid = QPushButton("Save Voxel Grid")
-        save_voxel_grid.setEnabled(False)
-        save_voxel_grid.clicked.connect(self._save_voxel_grid)
-        self._save_voxel_grid_button = save_voxel_grid
-        action_row.addWidget(save_voxel_grid)
-
         self._run_button = QPushButton("Run Virtual Printing")
         self._run_button.setObjectName("PrimaryButton")
         self._run_button.setIcon(self._icons["simulation"])
         self._run_button.setEnabled(False)
         self._run_button.clicked.connect(self._run_simulation)
         action_row.addWidget(self._run_button)
-
-        self._preview_result_button = QPushButton("Preview Result")
-        self._preview_result_button.setEnabled(False)
-        self._preview_result_button.clicked.connect(self._preview_result)
-        action_row.addWidget(self._preview_result_button)
-
-        self._save_result_button = QPushButton("Save Outputs")
-        self._save_result_button.setEnabled(False)
-        self._save_result_button.clicked.connect(self._save_outputs)
-        action_row.addWidget(self._save_result_button)
 
         scroll = QScrollArea()
         scroll.setObjectName("ParameterScroll")
@@ -2014,11 +2039,21 @@ class WorkbenchMainWindow:
         self._files_label = QLabel("-")
         output_layout.addWidget(self._output_label)
         output_layout.addWidget(self._files_label)
-        save_result = QPushButton("Save Current Result")
+
+        output_action_row = QHBoxLayout()
+        output_action_row.setContentsMargins(0, 0, 0, 0)
+        output_action_row.setSpacing(4)
+        save_voxel_grid = QPushButton("Save Voxel Grid")
+        save_voxel_grid.setEnabled(False)
+        save_voxel_grid.clicked.connect(self._save_voxel_grid)
+        self._save_voxel_grid_button = save_voxel_grid
+        output_action_row.addWidget(save_voxel_grid)
+        save_result = QPushButton("Save Outputs")
         save_result.setEnabled(False)
         save_result.clicked.connect(self._save_outputs)
-        output_layout.addWidget(save_result)
-        self._save_loaded_result_button = save_result
+        self._save_result_button = save_result
+        output_action_row.addWidget(save_result)
+        output_layout.addLayout(output_action_row)
         result_layout.addWidget(output_box)
         left_layout.addWidget(result_content, 1)
 
@@ -2832,12 +2867,37 @@ class WorkbenchMainWindow:
             return (0.0, 0.0, 0.0)
         values = []
         for label, field in zip(("X", "Y", "Z"), fields, strict=True):
+            if hasattr(field, "value"):
+                values.append(float(field.value()))
+                continue
             text = field.text().strip()
             if not text:
                 values.append(0.0)
                 continue
             values.append(self._float(field, f"Orientation {label}"))
         return _normalize_orientation_angles(tuple(values))
+
+    def _set_geometry_orientation_angles(self, angles: tuple[float, float, float]) -> None:
+        fields = getattr(self, "_orientation_fields", None)
+        if not fields:
+            return
+        for value, field in zip(_normalize_orientation_angles(angles), fields, strict=True):
+            if hasattr(field, "setValue"):
+                field.setValue(float(value))
+            else:
+                field.setText(f"{value:g}")
+
+    def _rotate_orientation_axis(self, axis_index: int, delta: float) -> None:
+        angles = list(self._geometry_orientation_angles())
+        if axis_index < 0 or axis_index >= len(angles):
+            return
+        angles[axis_index] += delta
+        self._set_geometry_orientation_angles(tuple(angles))
+        self._preview_part_geometry()
+
+    def _reset_geometry_orientation(self) -> None:
+        self._set_geometry_orientation_angles((0.0, 0.0, 0.0))
+        self._preview_part_geometry()
 
     def _geometry_processing_output_dir(self) -> Path:
         output_widget = getattr(self, "_output_dir", None)
@@ -2858,10 +2918,12 @@ class WorkbenchMainWindow:
         self._invalidate_voxelization()
         support_source = getattr(self, "_support_source", None)
         if support_source is not None and support_source.currentText() == "Generate from overhang":
+            self._last_generated_support_dirty = True
             self._last_generated_support_grid = None
             self._last_generated_support_path = None
             self._last_generated_support_type = None
             self._last_generated_support_signature = None
+            self._last_generated_support_dependency_snapshot = None
             self._last_generated_support_options = None
             self._last_support_overlay_preview = None
             if hasattr(self, "_save_support_button"):
@@ -3287,6 +3349,7 @@ class WorkbenchMainWindow:
             origin=self._last_voxel_grid.origin,
             label="Voxelization",
             support_mask=self._last_voxel_grid.support_mask,
+            support_path=getattr(self, "_last_voxel_support_path", None),
         )
 
     def _show_result_preview_from_cache(self) -> None:
@@ -3298,6 +3361,8 @@ class WorkbenchMainWindow:
             spacing=self._last_result.spacing,
             origin=self._last_result.origin,
             label="Result",
+            support_mask=self._last_result.support_mask,
+            support_path=self._last_result.support_geometry,
         )
 
     def _preview_part_geometry(self) -> None:
@@ -3466,7 +3531,18 @@ class WorkbenchMainWindow:
         self._set_busy(True, "Voxelizing geometry...", task="voxelization")
         generated_support_grid = self._cached_generated_support_grid_for_config(config)
         if generated_support_grid is not None:
-            self._append_log("Using cached generated support grid for voxelization.")
+            self._append_log(
+                "Using cached generated support grid for voxelization: "
+                f"{generated_support_grid.filled_count} support voxels"
+            )
+        elif (
+            getattr(config, "support_generation", None) is not None
+            and getattr(config, "support_geometry_path", None) is None
+        ):
+            self._append_log(
+                "Generated support cache unavailable; support will be regenerated during "
+                "voxelization."
+            )
         worker = _VoxelizationWorker(config, generated_support_grid=generated_support_grid)
         worker.signals.progress.connect(self._set_task_progress)
         worker.signals.finished.connect(self._voxelization_finished)
@@ -3485,6 +3561,7 @@ class WorkbenchMainWindow:
             self._last_voxel_grid = None
             self._last_voxel_preview_data = None
             self._last_voxel_signature = None
+            self._last_voxel_support_path = None
             self._voxel_status_label.setText("Required")
             self._set_busy(False, "Voxelization discarded")
             self._update_preview_source_availability()
@@ -3496,6 +3573,7 @@ class WorkbenchMainWindow:
         self._last_voxel_grid = grid
         self._last_voxel_preview_data = display_data
         self._last_voxel_signature = self._voxel_signature(config)
+        self._last_voxel_support_path = getattr(config, "support_geometry_path", None)
         self._set_preview_source("Voxelization")
         self._show_voxelization_preview_from_cache()
         self._voxel_status_label.setText(
@@ -3510,12 +3588,24 @@ class WorkbenchMainWindow:
             f"Voxel grid ready: shape={grid.shape}, filled={grid.filled_count}, "
             f"support={support_voxels}"
         )
+        support_requested = (
+            getattr(config, "support_generation", None) is not None
+            or getattr(config, "support_geometry_path", None) is not None
+        )
+        if support_requested and support_voxels <= 0:
+            self._append_log(
+                "Warning: support was requested, but voxelization produced 0 support voxels."
+            )
+            self._preview.show_message(
+                "Support was requested, but voxelization produced 0 support voxels."
+            )
 
     def _voxelization_failed(self, _config, message: str) -> None:
         self._voxelization_worker = None
         self._last_voxel_grid = None
         self._last_voxel_preview_data = None
         self._last_voxel_signature = None
+        self._last_voxel_support_path = None
         self._voxel_status_label.setText("Required")
         self._set_busy(False, "Voxelization failed")
         self._update_preview_source_availability()
@@ -3539,7 +3629,8 @@ class WorkbenchMainWindow:
             import numpy as np
 
             data = np.load(path)
-            source_geometry = self._result_source_geometry_from_npz(data)
+            source_geometry = self._result_path_from_npz(data, "source_geometry")
+            support_geometry = self._result_path_from_npz(data, "support_geometry")
             voxel = data["voxel"].astype(bool)
             support_mask = (
                 data["support_mask"].astype(bool)
@@ -3570,6 +3661,7 @@ class WorkbenchMainWindow:
                 ),
                 "path": Path(path),
                 "source_geometry": source_geometry,
+                "support_geometry": support_geometry,
             }
             self._mark_loaded_result_changed()
             self._sync_deviation_stl_from_result()
@@ -3582,9 +3674,12 @@ class WorkbenchMainWindow:
             self._QMessageBox.critical(self._window, "Result load failed", str(exc))
 
     def _result_source_geometry_from_npz(self, data) -> Path | None:
-        if "source_geometry" not in data.files:
+        return self._result_path_from_npz(data, "source_geometry")
+
+    def _result_path_from_npz(self, data, key: str) -> Path | None:
+        if key not in data.files:
             return None
-        raw = data["source_geometry"]
+        raw = data[key]
         if raw.size == 0:
             return None
         text = str(raw[0]).strip()
@@ -3603,6 +3698,7 @@ class WorkbenchMainWindow:
             "elapsed_seconds": result.elapsed_seconds,
             "path": None,
             "source_geometry": result.source_geometry,
+            "support_geometry": result.support_geometry,
         }
         self._mark_loaded_result_changed()
         self._sync_deviation_stl_from_result()
@@ -3625,13 +3721,47 @@ class WorkbenchMainWindow:
 
     def _update_result_action_state(self) -> None:
         enabled = (not getattr(self, "_busy", False)) and self._loaded_result is not None
+        preview_updating = bool(getattr(self, "_result_preview_updating", False))
         if hasattr(self, "_deviation_button"):
             self._deviation_button.setEnabled(enabled)
         if hasattr(self, "_result_display_preview_button"):
-            self._result_display_preview_button.setEnabled(enabled)
+            self._result_display_preview_button.setEnabled(enabled and not preview_updating)
+            self._result_display_preview_button.setText(
+                "Updating 3D..." if preview_updating else "Preview 3D"
+            )
+        if hasattr(self, "_save_result_button"):
+            self._save_result_button.setEnabled(enabled)
+        if hasattr(self, "_save_voxel_grid_button"):
+            self._save_voxel_grid_button.setEnabled(
+                (not getattr(self, "_busy", False)) and self._last_voxel_grid is not None
+            )
         if hasattr(self, "_result_hide_support"):
             support_mask = self._loaded_support_mask()
             self._result_hide_support.setEnabled(enabled and bool(support_mask.any()))
+
+    def _set_result_preview_updating(self, updating: bool) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        self._result_preview_updating = bool(updating)
+        if hasattr(self, "_result_display_preview_button"):
+            self._result_display_preview_button.setText(
+                "Updating 3D..." if updating else "Preview 3D"
+            )
+        if updating:
+            if hasattr(self, "_result_preview"):
+                self._result_preview.show_message("Updating 3D result preview...")
+            self._window.statusBar().showMessage("Updating 3D result preview...")
+            if not getattr(self, "_busy", False):
+                self._status_progress.setVisible(True)
+                self._status_progress.setRange(0, 0)
+                self._status_progress.setFormat("Updating")
+        elif not getattr(self, "_busy", False):
+            self._status_progress.setRange(0, 100)
+            self._status_progress.setValue(0)
+            self._status_progress.setVisible(False)
+            self._window.statusBar().showMessage("3D result preview updated")
+        self._update_result_action_state()
+        QApplication.processEvents()
 
     def _loaded_support_mask(self):
         import numpy as np
@@ -3643,6 +3773,15 @@ class WorkbenchMainWindow:
         if support_mask is None:
             return np.zeros_like(voxel, dtype=bool)
         return np.asarray(support_mask, dtype=bool)
+
+    def _loaded_support_geometry_path(self) -> Path | None:
+        if self._loaded_result is None:
+            return None
+        path = self._loaded_result.get("support_geometry")
+        if path is None:
+            return None
+        support_path = Path(path)
+        return support_path if support_path.exists() else None
 
     def _result_support_hidden(self) -> bool:
         return (
@@ -3673,8 +3812,23 @@ class WorkbenchMainWindow:
         self._slice_slider.setValue(volume.shape[axis_index] // 2)
         self._slice_slider.blockSignals(False)
         self._update_result_slice()
+        self._preview_loaded_result(show_error=False, automatic=True)
 
-    def _preview_loaded_result(self, *_args, show_error: bool = True) -> None:
+    def _result_preview_signature(self) -> tuple[object, ...] | None:
+        if self._loaded_result is None:
+            return None
+        return (
+            int(getattr(self, "_result_revision", 0)),
+            self._result_volume_choice.currentText(),
+            bool(self._result_support_removed()),
+        )
+
+    def _preview_loaded_result(
+        self,
+        *_args,
+        show_error: bool = True,
+        automatic: bool = False,
+    ) -> None:
         if self._loaded_result is None:
             if show_error:
                 self._QMessageBox.warning(
@@ -3683,6 +3837,12 @@ class WorkbenchMainWindow:
                     "Load or run a result first.",
                 )
             return
+        signature = self._result_preview_signature()
+        if automatic and signature == getattr(self, "_last_result_preview_signature", None):
+            return
+        if getattr(self, "_result_preview_updating", False):
+            return
+        self._set_result_preview_updating(True)
         volume = self._selected_result_volume()
         name = self._result_volume_choice.currentText()
         if name == "Probability":
@@ -3693,15 +3853,24 @@ class WorkbenchMainWindow:
             label = name
         if self._result_support_removed():
             label = f"{label} (support removed)"
-        self._append_log(f"Previewing result volume: {label}")
+            support_mask = None
+            support_path = None
+        else:
+            support_mask = self._loaded_support_mask()
+            support_path = self._loaded_support_geometry_path()
+        if not automatic:
+            self._append_log(f"Previewing result volume: {label}")
         try:
             self._result_preview.show_voxels(
                 preview_volume,
                 spacing=self._loaded_result["spacing"],
                 origin=self._loaded_result["origin"],
                 label=label,
+                support_mask=support_mask,
+                support_path=support_path,
                 raise_errors=True,
             )
+            self._last_result_preview_signature = signature
         except Exception as exc:
             self._append_log(f"Result 3D preview failed: {exc}")
             if show_error:
@@ -3710,6 +3879,8 @@ class WorkbenchMainWindow:
                     "Result 3D preview failed",
                     str(exc),
                 )
+        finally:
+            self._set_result_preview_updating(False)
 
     def _preview_geometry_deviation(self) -> None:
         if self._loaded_result is None:
@@ -4086,12 +4257,16 @@ class WorkbenchMainWindow:
         self._invalidate_voxelization()
 
     def _on_support_source_changed(self, *_args) -> None:
+        self._generated_support_dependency_changed()
         self._refresh_support_type_options()
         self._update_support_controls(self._part_type.currentText())
-        self._invalidate_voxelization()
 
     def _on_support_type_changed(self, *_args) -> None:
+        self._generated_support_dependency_changed()
         self._update_support_controls(self._part_type.currentText())
+
+    def _generated_support_dependency_changed(self, *_args) -> None:
+        self._last_generated_support_dirty = True
         self._invalidate_voxelization()
 
     def _refresh_support_type_options(self) -> None:
@@ -4210,16 +4385,14 @@ class WorkbenchMainWindow:
             ),
         )
 
-    def _support_generation_signature(
+    def _generated_support_dependency_snapshot(
         self,
         geometry_path: Path,
-        spacing: float,
         options,
     ) -> tuple[object, ...]:
         return (
             str(geometry_path.resolve()),
             _orientation_label(self._geometry_orientation_angles()),
-            float(spacing),
             options.support_type,
             float(options.overhang_angle),
             float(options.pitch),
@@ -4227,6 +4400,23 @@ class WorkbenchMainWindow:
             float(options.footprint_offset),
             float(options.contact_depth),
             options.build_plate_z,
+        )
+
+    def _support_generation_signature(
+        self,
+        geometry_path: Path,
+        spacing_or_options,
+        options=None,
+    ) -> tuple[object, ...]:
+        if options is None:
+            options = spacing_or_options
+        return self._generated_support_dependency_snapshot(geometry_path, options)
+
+    def _last_generated_support_snapshot(self):
+        return getattr(
+            self,
+            "_last_generated_support_dependency_snapshot",
+            getattr(self, "_last_generated_support_signature", None),
         )
 
     def _generated_support_stl_path(self, geometry_path: Path) -> Path:
@@ -4251,22 +4441,32 @@ class WorkbenchMainWindow:
             return None
         try:
             geometry_path = Path(self._part_geometry.text().strip())
-            spacing = self._float(self._grid_spacing, "Grid spacing")
             options = self._support_generation_from_form()
-            signature = self._support_generation_signature(geometry_path, spacing, options)
+            signature = self._generated_support_dependency_snapshot(geometry_path, options)
         except Exception:
             return None
         return signature, options
 
     def _active_generated_support_options(self):
+        if self._part_type.currentText() != "Part & Support":
+            return None
+        if self._support_source.currentText() != "Generate from overhang":
+            return None
+        if getattr(self, "_last_generated_support_dirty", False):
+            return None
+        support_path = getattr(self, "_last_generated_support_path", None)
+        support_grid = getattr(self, "_last_generated_support_grid", None)
+        if support_grid is None and (support_path is None or not Path(support_path).exists()):
+            return None
+        stored_options = getattr(self, "_last_generated_support_options", None)
+        stored_snapshot = self._last_generated_support_snapshot()
+        if stored_options is not None and stored_snapshot is not None:
+            return stored_options
         current = self._current_generated_support_signature_and_options()
         if current is None:
             return None
         signature, options = current
-        if signature != getattr(self, "_last_generated_support_signature", None):
-            return None
-        support_path = getattr(self, "_last_generated_support_path", None)
-        if support_path is None or not Path(support_path).exists():
+        if signature != stored_snapshot:
             return None
         return options
 
@@ -4274,7 +4474,10 @@ class WorkbenchMainWindow:
         options = self._active_generated_support_options()
         if options is None:
             return None
-        return Path(self._last_generated_support_path), options
+        support_path = getattr(self, "_last_generated_support_path", None)
+        if support_path is None or not Path(support_path).exists():
+            return None
+        return Path(support_path), options
 
     def _generated_support_path_and_voxel_type(self):
         if self._part_type.currentText() != "Part & Support":
@@ -4297,14 +4500,26 @@ class WorkbenchMainWindow:
             support_path = Path(support_text) if support_text else None
             if support_path is None or not support_path.exists():
                 return None
-            if signature != getattr(self, "_last_generated_support_signature", None):
+            if signature != self._last_generated_support_snapshot():
                 return None
-            generated_type = options.support_type
+            generated_type = getattr(self, "_last_generated_support_type", None)
+            if generated_type is None:
+                snapshot_options = (
+                    getattr(self, "_last_generated_support_options", None) or options
+                )
+                generated_type = snapshot_options.support_type
 
         if generated_type is None:
-            signature = getattr(self, "_last_generated_support_signature", None)
-            if isinstance(signature, tuple) and len(signature) >= 3:
-                generated_type = signature[3]
+            signature = self._last_generated_support_snapshot()
+            if isinstance(signature, tuple):
+                generated_type = next(
+                    (
+                        item
+                        for item in signature
+                        if item in {"X surface support", "Volume support"}
+                    ),
+                    None,
+                )
         if generated_type is None:
             try:
                 generated_type = self._support_generation_from_form().support_type
@@ -4317,32 +4532,58 @@ class WorkbenchMainWindow:
     def _cached_generated_support_grid_for_config(self, config):
         import numpy as np
 
-        support_path = getattr(config, "support_geometry_path", None)
-        if support_path is None:
-            return None
-        support_path = Path(support_path)
-        if not support_path.exists():
+        if getattr(config, "support_geometry_path", None) is not None:
+            if getattr(config, "support_generation", None) is not None:
+                self._append_log(
+                    "Generated support cache skipped: voxelizing the generated support STL."
+                )
             return None
         cached_path = getattr(self, "_last_generated_support_path", None)
         cached_grid = getattr(self, "_last_generated_support_grid", None)
-        if cached_path is not None:
-            if str(support_path.resolve()) != str(Path(cached_path).resolve()):
-                return None
+        if cached_grid is None:
+            self._append_log("Generated support cache skipped: no generated support grid.")
+            return None
+        if getattr(self, "_last_generated_support_dirty", False):
+            self._append_log("Generated support cache skipped: support dependencies changed.")
+            return None
+        if (
+            getattr(self, "_last_generated_support_options", None) is None
+            or self._last_generated_support_snapshot() is None
+        ):
             try:
-                if cached_grid is not None and np.isclose(
-                    float(cached_grid.spacing),
-                    float(config.voxel_spacing),
-                ):
-                    return cached_grid
+                current = self._current_generated_support_signature_and_options()
             except Exception:
-                pass
-        else:
-            support_source = getattr(self, "_support_source", None)
-            if (
-                support_source is not None
-                and support_source.currentText() != "Generate from overhang"
-            ):
+                current = None
+            if current is None:
+                support_path = getattr(config, "support_geometry_path", None)
+                if support_path is None or cached_path is None:
+                    self._append_log(
+                        "Generated support cache skipped: no active support signature."
+                    )
+                    return None
+                if str(Path(support_path).resolve()) != str(Path(cached_path).resolve()):
+                    self._append_log("Generated support cache skipped: support path changed.")
+                    return None
+            else:
+                signature, _options = current
+                if signature != self._last_generated_support_snapshot():
+                    self._append_log("Generated support cache skipped: support settings changed.")
+                    return None
+        support_path = getattr(config, "support_geometry_path", None)
+        if support_path is not None and cached_path is not None:
+            support_path = Path(support_path)
+            if str(support_path.resolve()) != str(Path(cached_path).resolve()):
+                self._append_log("Generated support cache skipped: config path mismatch.")
                 return None
+        try:
+            if np.isclose(float(cached_grid.spacing), float(config.voxel_spacing)):
+                return cached_grid
+        except Exception:
+            pass
+        self._append_log(
+            "Generated support grid cache skipped: voxel spacing changed; "
+            "regenerating support voxels at the current spacing."
+        )
         return None
 
     def _clear_support_selection(self) -> None:
@@ -4350,7 +4591,9 @@ class WorkbenchMainWindow:
         self._last_generated_support_path = None
         self._last_generated_support_type = None
         self._last_generated_support_signature = None
+        self._last_generated_support_dependency_snapshot = None
         self._last_generated_support_options = None
+        self._last_generated_support_dirty = False
         self._last_support_overlay_preview = None
         if hasattr(self, "_save_support_button"):
             self._save_support_button.setEnabled(False)
@@ -4394,9 +4637,8 @@ class WorkbenchMainWindow:
             spacing = self._float(self._grid_spacing, "Grid spacing")
             options = self._support_generation_from_form()
             output_path = self._generated_support_preview_stl_path()
-            request_signature = self._support_generation_signature(
+            request_signature = self._generated_support_dependency_snapshot(
                 geometry_path,
-                spacing,
                 options,
             )
         except Exception as exc:
@@ -4427,11 +4669,9 @@ class WorkbenchMainWindow:
         try:
             geometry_path = Path(self._part_geometry.text().strip())
             processing_geometry_path = self._part_geometry_processing_path()
-            spacing = self._float(self._grid_spacing, "Grid spacing")
             options = self._support_generation_from_form()
-            is_stale = request_signature != self._support_generation_signature(
+            is_stale = request_signature != self._generated_support_dependency_snapshot(
                 geometry_path,
-                spacing,
                 options,
             )
         except Exception:
@@ -4445,7 +4685,9 @@ class WorkbenchMainWindow:
         self._last_generated_support_path = Path(path)
         self._last_generated_support_type = options.support_type
         self._last_generated_support_signature = request_signature
+        self._last_generated_support_dependency_snapshot = request_signature
         self._last_generated_support_options = options
+        self._last_generated_support_dirty = False
         self._support_geometry.blockSignals(True)
         self._support_geometry.setText(path)
         self._support_geometry.blockSignals(False)
@@ -4466,7 +4708,9 @@ class WorkbenchMainWindow:
         self._last_generated_support_grid = None
         self._last_generated_support_type = None
         self._last_generated_support_signature = None
+        self._last_generated_support_dependency_snapshot = None
         self._last_generated_support_options = None
+        self._last_generated_support_dirty = False
         if hasattr(self, "_save_support_button"):
             self._save_support_button.setEnabled(False)
         self._set_busy(False, "Support generation failed")
@@ -5571,11 +5815,7 @@ class WorkbenchMainWindow:
             outside_voxels = int((result.binary & ~result.voxel).sum())
             self._outside_label.setText(str(outside_voxels))
             self._elapsed_label.setText(f"{result.elapsed_seconds:.3f} s")
-            self._preview_result_button.setEnabled(True)
             self._save_result_button.setEnabled(True)
-            self._save_loaded_result_button.setEnabled(True)
-            self._preview_result()
-            self._preview_loaded_result(show_error=False)
             self._append_log("Complete")
             self._append_log(f"Out-of-CAD voxels: {outside_voxels}")
             self._navigation.setCurrentRow(1)
@@ -5631,6 +5871,11 @@ class WorkbenchMainWindow:
             probability_density=probability_density,
             elapsed_seconds=float(self._loaded_result.get("elapsed_seconds", 0.0)),
             source_geometry=self._loaded_result.get("source_geometry"),
+            support_geometry=(
+                None
+                if self._result_support_removed()
+                else self._loaded_result.get("support_geometry")
+            ),
             support_mask=support_mask,
         )
 
@@ -5755,7 +6000,6 @@ class WorkbenchMainWindow:
                 "Saving..." if busy and task == "support_save" else "Save STL"
             )
         self._run_button.setEnabled((not busy) and self._last_voxel_grid is not None)
-        self._preview_result_button.setEnabled((not busy) and self._last_result is not None)
         if hasattr(self, "_save_voxel_grid_button"):
             self._save_voxel_grid_button.setEnabled(
                 (not busy) and self._last_voxel_grid is not None
@@ -5769,11 +6013,6 @@ class WorkbenchMainWindow:
             self._save_result_button.setEnabled(can_save)
             self._save_result_button.setText(
                 "Saving..." if busy and task == "save" else "Save Outputs"
-            )
-        if hasattr(self, "_save_loaded_result_button"):
-            self._save_loaded_result_button.setEnabled(can_save)
-            self._save_loaded_result_button.setText(
-                "Saving..." if busy and task == "save" else "Save Current Result"
             )
         self._update_result_action_state()
         if hasattr(self, "_deviation_button"):
@@ -5844,6 +6083,7 @@ class WorkbenchMainWindow:
         self._last_voxel_grid = None
         self._last_voxel_preview_data = None
         self._last_voxel_signature = None
+        self._last_voxel_support_path = None
         self._run_button.setEnabled(False)
         if hasattr(self, "_save_voxel_grid_button"):
             self._save_voxel_grid_button.setEnabled(False)
@@ -5897,9 +6137,35 @@ class WorkbenchMainWindow:
                 if not support_geometry_path.exists():
                     raise ValueError("Select a valid support geometry STL file.")
             else:
-                generated_support = self._generated_support_path_and_voxel_type()
+                generated_support = None
+                active_options = self._active_generated_support_options()
+                if active_options is not None:
+                    support_generation = active_options
+                    support_type = (
+                        "Line support"
+                        if active_options.support_type == "X surface support"
+                        else "Volume support"
+                    )
+                    active_support_path = getattr(
+                        self,
+                        "_last_generated_support_path",
+                        None,
+                    )
+                    if (
+                        active_support_path is not None
+                        and Path(active_support_path).exists()
+                    ):
+                        support_geometry_path = Path(active_support_path)
+                else:
+                    generated_support = self._generated_support_path_and_voxel_type()
                 if generated_support is not None:
                     support_geometry_path, support_type = generated_support
+                elif support_generation is None:
+                    raise ValueError(
+                        "Part & Support is enabled, but no active generated support is "
+                        "available. Click Generate after changing geometry, orientation, "
+                        "or support options before voxelizing."
+                    )
 
         neighborhood_text = self._neighborhood.currentText()
         if neighborhood_text == "SimpleVN":

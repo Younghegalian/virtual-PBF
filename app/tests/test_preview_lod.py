@@ -13,49 +13,24 @@ from capp.workbench.preview import (
 )
 
 
-def test_paraview_volume_keeps_large_volume_full_resolution():
-    pane = object.__new__(PreviewPane)
-    volume = np.ones((360, 360, 360), dtype=bool)
-
-    data, stride = PreviewPane._prepare_volume_data(pane, volume, "ParaView Volume")
-
-    assert stride == 1
-    assert data.shape == volume.shape
-
-
 def test_isosurface_uses_surface_extraction_safety_stride():
     pane = object.__new__(PreviewPane)
     volume = np.ones((720, 720, 720), dtype=bool)
 
-    data, stride = PreviewPane._prepare_volume_data(pane, volume, "Isosurface")
+    data, stride = PreviewPane._prepare_volume_data(pane, volume)
 
     assert stride > 1
     assert data.shape[0] < volume.shape[0]
 
 
-def test_block_preview_uses_geometry_safety_pooling():
+def test_volume_preview_keeps_small_volume_full_resolution():
     pane = object.__new__(PreviewPane)
-    volume = np.ones((180, 180, 180), dtype=bool)
+    volume = np.ones((64, 64, 64), dtype=bool)
 
-    data, stride = PreviewPane._prepare_volume_data(pane, volume, "Voxel Blocks")
-    block_data, block_stride = PreviewPane._prepare_binary_block_data(pane, data)
+    data, stride = PreviewPane._prepare_volume_data(pane, volume)
 
     assert stride == 1
-    assert block_stride > 1
-    assert block_data.size < data.size
-
-
-def test_smooth_volume_preserves_shape_and_normalizes():
-    pane = object.__new__(PreviewPane)
-    volume = np.zeros((9, 9, 9), dtype=np.float32)
-    volume[4, 4, 4] = 1.0
-
-    smooth = PreviewPane._prepare_smooth_volume_data(pane, volume, binary_like=True)
-
-    assert smooth.shape == volume.shape
-    assert np.isclose(smooth.max(), 1.0)
-    assert smooth[4, 4, 4] == smooth.max()
-    assert np.count_nonzero(smooth > 0.0) > 1
+    assert data.shape == volume.shape
 
 
 def test_isosurface_mesh_builds_from_binary_volume():

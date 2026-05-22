@@ -8,6 +8,7 @@ from capp.io.exports import save_npz
 
 def test_save_npz_preserves_source_geometry_path(tmp_path: Path):
     geometry = tmp_path / "part.stl"
+    support_geometry = tmp_path / "support.stl"
     support_mask = np.zeros((2, 2, 2), dtype=bool)
     support_mask[0, 0, 0] = True
     result = SimulationResult(
@@ -20,6 +21,7 @@ def test_save_npz_preserves_source_geometry_path(tmp_path: Path):
         probability_density=100.0,
         elapsed_seconds=0.01,
         source_geometry=geometry,
+        support_geometry=support_geometry,
         support_mask=support_mask,
     )
 
@@ -28,4 +30,5 @@ def test_save_npz_preserves_source_geometry_path(tmp_path: Path):
 
     with np.load(output, allow_pickle=False) as payload:
         assert str(payload["source_geometry"][0]) == str(geometry)
+        assert str(payload["support_geometry"][0]) == str(support_geometry)
         assert payload["support_mask"].astype(bool).sum() == 1

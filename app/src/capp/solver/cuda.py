@@ -63,6 +63,7 @@ class CudaLayerwiseMarkovSolver:
             ((1, 1), (1, 1), (1, 1)),
             mode="constant",
         )
+        part_calc = (voxel_calc > 0.0) & ~support_calc
 
         probability = cp.zeros_like(voxel_calc, dtype=cp.float32)
         probability[:, :, 0] = 1.0
@@ -96,7 +97,13 @@ class CudaLayerwiseMarkovSolver:
             center_voxel = voxel_calc[1 : x_size + 1, 1 : y_size + 1, layer]
             layer_view = probability[1 : x_size + 1, 1 : y_size + 1, layer]
             support_layer = support_calc[1 : x_size + 1, 1 : y_size + 1, layer]
-            layer_idp_model = _idp_model_without_support_gpu(cp, idp_model, support_layer)
+            idp_allowed_layer = _idp_allowed_from_part_neighbors_gpu(part_calc, layer)
+            layer_idp_model = _idp_model_without_support_gpu(
+                cp,
+                idp_model,
+                support_layer,
+                idp_allowed_layer,
+            )
             _layer_progress(progress.report, layer, z_size, 0, parameters.iteration_bound)
 
             if layer <= beta:
@@ -215,14 +222,30 @@ def _update_von_neumann_layer_gpu(
     return cp.clip(updated, 0.0, 1.0).astype(cp.float32, copy=False)
 
 
-def _idp_model_without_support_gpu(cp, idp_model, support_layer):
-    if not bool(cp.any(support_layer).get()):
+def _idp_allowed_from_part_neighbors_gpu(part_calc, layer: int):
+    x_size = part_calc.shape[0] - 2
+    y_size = part_calc.shape[1] - 2
+    return (
+        part_calc[1 : x_size + 1, 1 : y_size + 1, layer]
+        | part_calc[1 : x_size + 1, 0:y_size, layer]
+        | part_calc[0:x_size, 1 : y_size + 1, layer]
+        | part_calc[2 : x_size + 2, 1 : y_size + 1, layer]
+        | part_calc[1 : x_size + 1, 2 : y_size + 2, layer]
+        | part_calc[1 : x_size + 1, 1 : y_size + 1, layer - 1]
+    )
+
+
+def _idp_model_without_support_gpu(cp, idp_model, support_layer, idp_allowed_layer=None):
+    blocked = support_layer
+    if idp_allowed_layer is not None:
+        blocked = blocked | ~idp_allowed_layer
+    if not bool(cp.any(blocked).get()):
         return idp_model
     if getattr(idp_model, "ndim", 0) == 0:
-        masked = cp.full(support_layer.shape, float(idp_model), dtype=cp.float32)
+        masked = cp.full(blocked.shape, float(idp_model), dtype=cp.float32)
     else:
         masked = idp_model.copy()
-    masked[support_layer] = 0.0
+    masked[blocked] = 0.0
     return masked
 
 

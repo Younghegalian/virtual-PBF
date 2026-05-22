@@ -215,6 +215,7 @@ class SimulationResult:
     probability_density: float
     elapsed_seconds: float
     source_geometry: Path | None = None
+    support_geometry: Path | None = None
     support_mask: NDArray[np.bool_] | None = None
 
     def __post_init__(self) -> None:

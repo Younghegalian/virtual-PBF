@@ -4,6 +4,8 @@ import trimesh
 from capp.domain import SupportGenerationParameters
 from capp.geometry.voxelizer import (
     _column_lattice_pattern,
+    _grid_data_in_frame,
+    _mark_projected_triangle,
     _x_surface_lattice_pattern,
     generate_overhang_support_grid,
     union_voxel_grids,
@@ -264,14 +266,17 @@ def test_column_support_lattice_is_centered_and_uniform():
     assert np.array_equal(np.unique(occupied[:, 1]), np.asarray([2, 6, 10]))
 
 
-def test_x_surface_lattice_is_centered_on_component():
+def test_x_surface_lattice_uses_global_phase_across_components():
     footprint = np.ones((9, 9), dtype=bool)
+    footprint[4, :] = False
 
     pattern = _x_surface_lattice_pattern(footprint, pitch_cells=3)
 
-    assert pattern[4, 4]
     assert pattern.sum() < footprint.sum()
-    assert np.array_equal(pattern, np.flipud(np.fliplr(pattern)))
+    assert pattern[0, 0]
+    assert pattern[8, 8]
+    assert not pattern[4, 4]
+    assert np.array_equal(pattern, footprint & np.flipud(np.fliplr(pattern)))
 
 
 def test_part_and_generated_support_voxelization_unions_inputs(tmp_path):
@@ -296,6 +301,56 @@ def test_part_and_generated_support_voxelization_unions_inputs(tmp_path):
     assert combined.origin[2] <= 0.0
 
 
+def test_materialized_support_stl_takes_precedence_over_generation_options(tmp_path):
+    part_path = _box_stl(tmp_path, "materialized_support_part", (4.0, 4.0, 1.0), (2.0, 2.0, 0.5))
+    support_path = _box_stl(
+        tmp_path,
+        "materialized_support",
+        (1.0, 1.0, 1.0),
+        (2.0, 2.0, 2.0),
+    )
+
+    combined = voxelize_part_and_support(
+        part_path,
+        support_path,
+        spacing=1.0,
+        support_type="Volume support",
+        support_generation=SupportGenerationParameters(
+            support_type="invalid generated support mode",
+            overhang_angle=60.0,
+        ),
+    )
+
+    assert combined.support_mask.sum() > 0
+
+
+def test_generated_support_label_preserves_contact_overlap(tmp_path):
+    part_path = _box_stl(tmp_path, "generated_support_overlap", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
+
+    combined = voxelize_part_and_support(
+        part_path,
+        None,
+        spacing=1.0,
+        support_generation=SupportGenerationParameters(
+            support_type="X surface support",
+            overhang_angle=60.0,
+            pitch=2.0,
+            thickness=1.0,
+            contact_depth=1.0,
+            build_plate_z=0.0,
+        ),
+    )
+    part = voxelize_mesh(part_path, spacing=1.0)
+    part_in_combined = _grid_data_in_frame(
+        part,
+        combined.origin,
+        combined.shape,
+        combined.spacing,
+    )
+
+    assert np.any(combined.support_mask & part_in_combined)
+
+
 def test_cached_generated_support_grid_can_be_combined_without_rasterizing_stl(tmp_path):
     part_path = _box_stl(tmp_path, "cached_support_part", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
     part = voxelize_mesh(part_path, spacing=1.0)
@@ -315,6 +370,104 @@ def test_cached_generated_support_grid_can_be_combined_without_rasterizing_stl(t
 
     assert combined.filled_count > part.filled_count
     assert combined.support_mask.sum() > 0
+
+
+def test_multi_axis_center_projection_keeps_surface_support_thin():
+    triangle = np.asarray(
+        [
+            [0.1, 0.1, 0.1],
+            [4.8, 0.4, 2.2],
+            [0.4, 4.8, 2.4],
+        ],
+        dtype=np.float64,
+    )
+    origin = np.zeros(3, dtype=np.float64)
+    single = np.zeros((6, 6, 6), dtype=bool)
+    multi = np.zeros_like(single)
+
+    _mark_projected_triangle(
+        single,
+        triangle,
+        origin,
+        spacing=1.0,
+        step=0.5,
+        sample_offsets=((0.5, 0.5),),
+    )
+    _mark_projected_triangle(
+        multi,
+        triangle,
+        origin,
+        spacing=1.0,
+        step=0.5,
+        multi_axis=True,
+        sample_offsets=((0.5, 0.5),),
+    )
+
+    assert multi.sum() >= single.sum()
+    assert multi.sum() <= single.sum() * 3
+
+
+def test_corner_projection_is_only_used_for_solid_overhang_rasterization():
+    triangle = np.asarray(
+        [
+            [0.1, 0.1, 0.1],
+            [4.8, 0.4, 2.2],
+            [0.4, 4.8, 2.4],
+        ],
+        dtype=np.float64,
+    )
+    origin = np.zeros(3, dtype=np.float64)
+    single = np.zeros((6, 6, 6), dtype=bool)
+    multi = np.zeros_like(single)
+
+    _mark_projected_triangle(single, triangle, origin, spacing=1.0, step=0.5)
+    _mark_projected_triangle(
+        multi,
+        triangle,
+        origin,
+        spacing=1.0,
+        step=0.5,
+        multi_axis=True,
+    )
+
+    assert multi.sum() >= single.sum()
+    assert np.any(multi & ~single)
+
+
+def test_cached_generated_support_label_preserves_contact_overlap(tmp_path):
+    part_path = _box_stl(tmp_path, "cached_support_overlap", (4.0, 4.0, 1.0), (2.0, 2.0, 2.0))
+    part = voxelize_mesh(part_path, spacing=1.0)
+    support = generate_overhang_support_grid(
+        part_path,
+        part,
+        SupportGenerationParameters(
+            support_type="X surface support",
+            overhang_angle=60.0,
+            pitch=2.0,
+            thickness=1.0,
+            contact_depth=1.0,
+            build_plate_z=0.0,
+        ),
+    )
+
+    combined = voxelize_part_with_support_grid(part_path, support, spacing=1.0)
+    part_in_combined = _grid_data_in_frame(
+        part,
+        combined.origin,
+        combined.shape,
+        combined.spacing,
+    )
+
+    assert np.any(combined.support_mask & part_in_combined)
+
+
+def test_cached_support_label_is_not_silently_dropped_when_it_overlaps_part(tmp_path):
+    part_path = _box_stl(tmp_path, "overlapped_support_part", (2.0, 2.0, 2.0), (1.0, 1.0, 1.0))
+    part = voxelize_mesh(part_path, spacing=1.0)
+
+    combined = voxelize_part_with_support_grid(part_path, part, spacing=1.0)
+
+    assert combined.support_mask.sum() == part.filled_count
 
 
 def test_part_and_support_without_generation_request_keeps_part_only(tmp_path):

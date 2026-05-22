@@ -110,6 +110,30 @@ std::vector<std::uint8_t> read_support_mask(py::dict parameters, Shape3 cropped,
   return mask;
 }
 
+std::vector<std::uint8_t> build_part_mask(
+    const std::vector<float>& voxel_calc,
+    const std::vector<std::uint8_t>& support_mask) {
+  std::vector<std::uint8_t> part_mask(voxel_calc.size(), 0);
+  for (std::size_t cell = 0; cell < voxel_calc.size(); ++cell) {
+    part_mask[cell] = (voxel_calc[cell] > 0.0F && !support_mask[cell]) ? 1 : 0;
+  }
+  return part_mask;
+}
+
+bool idp_allowed_from_part_neighbors(
+    const std::vector<std::uint8_t>& part_mask,
+    Shape3 padded,
+    std::size_t i,
+    std::size_t j,
+    std::size_t layer) {
+  return part_mask[idx(i + 1, j + 1, layer, padded)] ||
+         part_mask[idx(i + 1, j, layer, padded)] ||
+         part_mask[idx(i, j + 1, layer, padded)] ||
+         part_mask[idx(i + 2, j + 1, layer, padded)] ||
+         part_mask[idx(i + 1, j + 2, layer, padded)] ||
+         part_mask[idx(i + 1, j + 1, layer - 1, padded)];
+}
+
 SpatialParameters parse_spatial_parameters(py::dict parameters, Shape3 cropped) {
   SpatialParameters spatial{};
   if (parameters.contains("spatial_current_coefficients") &&
@@ -420,6 +444,7 @@ py::dict solve_von_neumann(
         }
       }
     }
+    std::vector<std::uint8_t> part_mask = build_part_mask(voxel_calc, support_mask);
     report_progress(2, "Generating native stochastic field");
 
     std::mt19937 rng(params.rng_seed);
@@ -484,7 +509,9 @@ py::dict solve_von_neumann(
                                          ? idp_model
                                          : spatial.initial_deviation[map_cell] /
                                                static_cast<float>(spacing);
-              if (support_mask[padded_cell]) {
+              bool idp_allowed =
+                  idp_allowed_from_part_neighbors(part_mask, padded, i, j, layer);
+              if (support_mask[padded_cell] || !idp_allowed) {
                 idp_model_cell = 0.0F;
               }
               float left = probability[idx(i + 1, j, layer, padded)] * neg_y;
