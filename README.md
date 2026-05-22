@@ -1,7 +1,7 @@
 # Virtual PBF Workbench
 
 <p align="center">
-  <img src="docs/images/virtual-pbf-banner.svg" alt="Virtual PBF Workbench banner">
+  <img src="docs/images/virtual-pbf-banner.png" alt="Virtual PBF Workbench banner">
 </p>
 
 <p>
