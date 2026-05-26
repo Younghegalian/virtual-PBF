@@ -84,12 +84,53 @@ parameter maps for fast comparative studies.
 ## Workbench Flow
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#0f172a", "primaryColor": "#10243f", "primaryTextColor": "#e0f2fe", "primaryBorderColor": "#38bdf8", "lineColor": "#67e8f9", "textColor": "#e0f2fe", "clusterBkg": "#0b1220", "clusterBorder": "#1e3a5f", "edgeLabelBackground": "#0f172a", "fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif"}}}%%
 flowchart LR
-  A["Build Setup<br/>STL, orientation, support"] --> B["Voxelization<br/>grid spacing and masks"]
-  B --> C["Virtual Printing<br/>solver, process options, machine map"]
-  C --> D["Result Display<br/>volume, support removal, deviation heatmap"]
-  E["Model Calibration<br/>ROI samples"] --> F["Machine Map<br/>preset library"]
-  F --> C
+  subgraph prep["Prepare Geometry"]
+    A["Build Setup<br/>STL / orientation / support"]
+    B["Voxelization<br/>grid spacing / part-support masks"]
+  end
+
+  subgraph run["Virtual Print"]
+    C["Solver Run<br/>CPU / native C++ / CUDA"]
+    M["Machine Map<br/>spatial parameter field"]
+  end
+
+  subgraph inspect["Inspect Results"]
+    D["Result Display<br/>volume / support removal / slices"]
+    H["Deviation Heatmap<br/>signed STL comparison"]
+  end
+
+  subgraph tune["Calibrate"]
+    E["ROI Samples<br/>reference masks"]
+    F["Model Calibration<br/>fitted coefficients"]
+  end
+
+  A -->|"oriented STL"| B
+  B -->|"voxel masks"| C
+  M -->|"preset inputs"| C
+  C -->|"sampled volume"| D
+  D --> H
+  E --> F
+  F -->|"update preset"| M
+
+  classDef stage fill:#10243f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe;
+  classDef focus fill:#0b7285,stroke:#67e8f9,stroke-width:2px,color:#ecfeff;
+  classDef accent fill:#3b2411,stroke:#f97316,stroke-width:2px,color:#ffedd5;
+  classDef metric fill:#111827,stroke:#fbbf24,stroke-width:1.5px,color:#fef3c7;
+  class A,B,D,E stage;
+  class C,M focus;
+  class F accent;
+  class H metric;
+
+  style prep fill:#07111f,stroke:#1e3a5f,stroke-width:1px,color:#bae6fd;
+  style run fill:#071827,stroke:#0ea5e9,stroke-width:1px,color:#bae6fd;
+  style inspect fill:#0a1322,stroke:#1e3a5f,stroke-width:1px,color:#bae6fd;
+  style tune fill:#17110a,stroke:#f97316,stroke-width:1px,color:#fed7aa;
+
+  linkStyle 0,1,2,3 stroke:#67e8f9,stroke-width:2px;
+  linkStyle 4 stroke:#fbbf24,stroke-width:2px;
+  linkStyle 5,6 stroke:#f97316,stroke-width:2px,stroke-dasharray: 6 4;
 ```
 
 ## Screenshots
