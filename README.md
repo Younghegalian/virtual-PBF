@@ -86,41 +86,29 @@ parameter maps for fast comparative studies.
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"background": "#0f172a", "primaryColor": "#10243f", "primaryTextColor": "#e0f2fe", "primaryBorderColor": "#38bdf8", "lineColor": "#67e8f9", "textColor": "#e0f2fe", "clusterBkg": "#0b1220", "clusterBorder": "#1e3a5f", "edgeLabelBackground": "#0f172a", "fontFamily": "Inter, ui-sans-serif, system-ui, sans-serif"}}}%%
 flowchart TB
-  A["01 Build Setup<br/>STL / orientation / support"]
-  B["02 Voxelization<br/>grid spacing / masks"]
-  M["03 Model Inputs<br/>solver options / stochastic process<br/>machine-map preset"]
-  C["04 Virtual Printing<br/>CPU / native C++ / CUDA"]
-  V["05 Sampled Volume<br/>probability field to binary geometry"]
-  D["06 Result Display<br/>support removal / slices"]
-  H["07 Deviation Heatmap<br/>signed STL comparison"]
-  E["ROI Samples<br/>reference masks"]
-  F["Model Calibration<br/>fitted coefficients"]
-  R["Preset Library<br/>reusable machine parameters"]
+  A["01 Prepare Geometry"]
+  B["02 Voxelize Build"]
+  C["03 Configure Model"]
+  D["04 Run Simulation"]
+  E["05 Inspect Results"]
+  F["06 Calibrate And Reuse"]
 
-  A -->|"oriented STL"| B
-  B -->|"voxel masks"| M
-  M -->|"configured run"| C
-  C -->|"stochastic solve"| V
-  V -->|"simulation output"| D
-  D -->|"geometry check"| H
-  H -->|"reference regions"| E
-  E -->|"fit model"| F
-  F -->|"export preset"| R
-  R -.->|"update machine map"| M
+  A --> B
+  B --> C
+  C --> D
+  D --> E
+  E --> F
+  F -.-> C
 
   classDef stage fill:#10243f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe;
   classDef focus fill:#0b7285,stroke:#67e8f9,stroke-width:2px,color:#ecfeff;
   classDef accent fill:#3b2411,stroke:#f97316,stroke-width:2px,color:#ffedd5;
-  classDef metric fill:#111827,stroke:#fbbf24,stroke-width:1.5px,color:#fef3c7;
-  class A,B,D,E stage;
-  class M,C,V focus;
-  class F,R accent;
-  class H metric;
+  class A,B,E stage;
+  class C,D focus;
+  class F accent;
 
-  linkStyle 0,1,2,3,4,5 stroke:#67e8f9,stroke-width:2px;
-  linkStyle 6 stroke:#fbbf24,stroke-width:2px;
-  linkStyle 7,8 stroke:#f97316,stroke-width:2px;
-  linkStyle 9 stroke:#f97316,stroke-width:2px,stroke-dasharray: 6 4;
+  linkStyle 0,1,2,3,4 stroke:#67e8f9,stroke-width:2px;
+  linkStyle 5 stroke:#f97316,stroke-width:2px,stroke-dasharray: 6 4;
 ```
 
 ## Screenshots
