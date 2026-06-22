@@ -1,4 +1,4 @@
-geometry_path: ../../Geometry_examples/4CodeTest/sphere.stl
+geometry_path: ../../data/geometry_examples/4CodeTest/sphere.stl
 output_dir: outputs/minimal_simulation
 voxel_spacing: 0.5
 

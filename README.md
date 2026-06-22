@@ -167,7 +167,6 @@ virtual PBF/
     geometry_examples/      STL fixtures and calibration artifact geometry
     calibration_samples/    ROI target masks for Model Calibration
     machine_map/            SP coordinate workbook and portable CSV
-    legacy_models/          Historical machine-model artifacts kept for reference
 ```
 
 ## Quick Start
@@ -240,7 +239,7 @@ data/geometry_examples/
 data/calibration_samples/
 data/machine_map/sp_coordinates.xlsx
 data/machine_map/sp_coordinates.csv
-data/legacy_models/
+data/machine_map/result_007.mat
 ```
 
 See `DATA_MANIFEST.md` for a concise list of included data.

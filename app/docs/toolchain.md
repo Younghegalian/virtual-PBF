@@ -60,7 +60,7 @@ The workbench stores CuPy's kernel cache under `app\.cupy_cache` so it does not 
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m capp.cli inspect-mat "..\data\legacy_models\Huneed_TI64.mat"
+.\.venv\Scripts\python.exe -m capp.cli inspect-mat "..\data\machine_map\result_007.mat"
 .\.venv\Scripts\python.exe -m capp.cli simulate --config examples\minimal_simulation.yaml
 .\.venv\Scripts\python.exe launch_workbench.pyw
 ```
